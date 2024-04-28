@@ -1,0 +1,305 @@
+---
+title: "CPLN_Final_RB"
+author: "Richard Barad"
+date: "2024-04-24"
+output: html_document
+---
+
+```{r setup, echo=FALSE}
+
+library(sf)
+library(tidycensus)
+library(terra)
+library(tidyverse)
+library(tidyterra)
+library(FNN)
+
+```
+
+```{r functions, echo=FALSE}
+
+xyC <- function(aPolygonSF) {
+  as.data.frame(
+    cbind(x=st_coordinates(st_centroid(aPolygonSF))[,1],
+          y=st_coordinates(st_centroid(aPolygonSF))[,2]))
+} 
+
+nn_function <- function(measureFrom,measureTo,k) {
+  #convert the sf layers to matrices
+  measureFrom_Matrix <-
+    as.matrix(measureFrom)
+  measureTo_Matrix <-
+    as.matrix(measureTo)
+  nn <-   
+    get.knnx(measureTo, measureFrom, k)$nn.dist
+    output <-
+    as.data.frame(nn) %>%
+    rownames_to_column(var = "thisPoint") %>%
+    gather(points, point_distance, V1:ncol(.)) %>%
+    arrange(as.numeric(thisPoint)) %>%
+    group_by(thisPoint) %>%
+    summarize(pointDistance = mean(point_distance)) %>%
+    arrange(as.numeric(thisPoint)) %>% 
+    dplyr::select(-thisPoint) %>%
+    pull()
+  
+  return(output)  
+}
+```
+
+# Get Data
+
+## Get MSA for Atlanta
+
+```{r atl_msa}
+
+atl_msa <- st_read('https://arcgis.atlantaregional.com/arcgis/rest/services/OpenData/FeatureServer/67/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_make_valid() %>%
+  st_transform('EPSG:2240') %>%
+  dplyr::filter(MSA == 'Y')
+
+atl_msa_dissolve <- st_union(atl_msa)
+
+```
+
+## Get Land Cover Data
+
+```{r atl_landcover}
+
+lc2011 <- rast('DATA/nlcd_2011.tif')
+lc2011 <- project(lc2011,'EPSG:2240')
+lc2011 <- terra::mask(lc2011,atl_msa)
+
+lc2021 <- rast('DATA/nlcd_2021.tif')
+lc2021 <- project(lc2021,'EPSG:2240')
+lc2021 <- terra::mask(lc2021,atl_msa)
+
+```
+
+## Identify developed/undeveloped areas and change
+
+```{r developed_area}
+
+reclassMatrix <- 
+  matrix(c(
+    0,12,0,
+    12,24,1,
+    24,Inf,0),
+  ncol=3, byrow=T)
+
+developed_2011 <- classify(lc2011,reclassMatrix)
+
+developed_2021 <- classify(lc2021,reclassMatrix)
+
+development_change <- developed_2011+developed_2021
+
+reclass2 <- matrix(c(0,0,
+                     1,1,
+                     2,0),ncol=2,byrow=T)
+
+development_change <- classify(development_change,reclass2)
+
+levels(development_change) <- c('No_Change','Change')
+
+plot(development_change)
+
+```
+# Create Fishnet for 2011
+
+```{r create_fishnet}
+
+fishnet_2011 <- st_make_grid(atl_msa,2000) %>%
+  st_sf() %>%
+  st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
+  mutate(ID=row_number()) %>%
+  select(ID)
+ 
+ggplot()+
+  geom_sf(data=fishnet_2011,color='grey50',fill='gray90',linewidth=0.1)+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  theme_void()
+
+```
+
+# Identify grid squares that are developed and not developed
+
+```{r summarize_development}
+
+dev_ch <- terra::extract(development_change,fishnet_2011,fun=table) %>%
+  mutate(percent = Change / (No_Change + Change) * 100)
+
+hist(dev_ch$percent,breaks=100)
+
+fishnet_2011 <- dev_ch %>%
+  mutate(lc_change = as.factor(ifelse(dev_ch$percent < 25,0,1))) %>%
+  select(lc_change) %>%
+  cbind(fishnet_2011,.) %>%
+  drop_na(lc_change) %>%
+  mutate(ID=row_number())
+
+ggplot()+
+  geom_sf(data=fishnet_2011,aes(fill=lc_change),color='transparent')+
+  geom_sf(data=atl_msa,color='black',fill='transparent')+
+  scale_fill_manual(values=c('gray95','green'),name='Development Change',labels=c('No Change','Change'))+
+  theme_void()
+
+```
+
+# Identify Dominant Land Cover Class 
+
+```{r, reclassify_dev, warning = FALSE, message = FALSE}
+
+land_cover_reclass_matrix = matrix(
+                           c(11,0,
+                             21,1,
+                             22,1,
+                             23,1,
+                             24,1,
+                             41,2,
+                             42,2,
+                             43,2,
+                             81,3,
+                             82,3,
+                             90,4,
+                             95,4,
+                             52,5,
+                             71,5,
+                             31,5),
+                             ncol=2,byrow = TRUE)
+
+lc2011_class <- terra::classify(lc2011,land_cover_reclass_matrix)
+
+levels(lc2011_class) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+
+ggplot()+
+  geom_spatraster(data=lc2011_class,na.rm=TRUE)+
+  scale_fill_manual(values=c('lightblue','pink','lightgreen','lightyellow','blue','orange'),na.value = "transparent",name='Land Cover')+
+  theme_void()
+
+```
+
+```{r}
+
+lc2011_extract <- terra::extract(lc2011_class,fishnet_2011,fun=table) %>%
+  pivot_longer(cols=-ID,names_to='Category',values_to='Count') 
+
+onehop <- function(df,value) {
+  df %>%
+  mutate(!!value := ifelse(Category == {{value}},1,0))
+}
+
+fishnet_2011 <- lc2011_extract %>%
+  group_by(ID) %>% summarize(Count = max(Count)) %>%
+  left_join(.,lc2011_extract,by=c('ID','Count'),multiple='first') %>%
+  select(ID,Category) %>%
+  onehop(.,'Water') %>%
+  onehop(.,'Developed') %>%
+  onehop(.,'Forest') %>%
+  onehop(.,'Farm') %>%
+  onehop(.,'Wetlands') %>%
+  onehop(.,'OtherUndeveloped') %>%
+  mutate(ID = as.integer(ID)) %>%
+  inner_join(.,fishnet_2011,by='ID') %>%
+  select(-Category) %>%
+  st_as_sf()
+
+```
+
+## Spatial Lag of Development
+
+``` {r}
+
+fishnet_2011$lagDevelopment_5 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,Developed==1)),5)
+fishnet_2011$lagDevelopment_10 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,Developed==1)),10)
+
+ggplot()+
+  geom_sf(data=fishnet_2011,aes(fill=lagDevelopment_10),color='transparent')+
+  geom_sf(data=atl_msa,color='black',linewidth=1,fill='transparent')+
+  scale_fill_viridis_c(option='virdis',name='Spatial Lag to Development (feet)')+
+  labs(title = "Spatial Lag to 2011 Development")+
+  theme_void()
+
+```
+
+## Join Counties
+
+``` {r}
+
+data <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
+  filter(Water == 0 | Developed == 1) 
+  
+```
+
+# Build Fishnet for 2021
+
+```{r create_fishnet}
+
+fishnet_2021 <- st_make_grid(atl_msa,2000) %>%
+  st_sf() %>%
+  st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
+  mutate(ID=row_number()) %>%
+  select(ID)
+
+```
+
+## Identify Dominant Land Cover Class 
+
+```{r, reclassify_dev, warning = FALSE, message = FALSE}
+
+
+lc2021_class <- terra::classify(lc2021,land_cover_reclass_matrix)
+
+levels(lc2021_class) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+
+ggplot()+
+  geom_spatraster(data=lc2021_class,na.rm=TRUE)+
+  scale_fill_manual(values=c('lightblue','pink','lightgreen','lightyellow','blue','orange'),na.value = "transparent",name='Land Cover')+
+  theme_void()
+
+```
+
+```{r}
+
+lc2021_extract <- terra::extract(lc2021_class,fishnet_2021,fun=table) %>%
+  pivot_longer(cols=-ID,names_to='Category',values_to='Count') 
+
+onehop <- function(df,value) {
+  df %>%
+  mutate(!!value := ifelse(Category == {{value}},1,0))
+}
+
+fishnet_2021 <- lc2021_extract %>%
+  group_by(ID) %>% summarize(Count = max(Count)) %>%
+  left_join(.,lc2011_extract,by=c('ID','Count'),multiple='first') %>%
+  select(ID,Category) %>%
+  onehop(.,'Water') %>%
+  onehop(.,'Developed') %>%
+  onehop(.,'Forest') %>%
+  onehop(.,'Farm') %>%
+  onehop(.,'Wetlands') %>%
+  onehop(.,'OtherUndeveloped') %>%
+  mutate(ID = as.integer(ID)) %>%
+  inner_join(.,fishnet_2021,by='ID') %>%
+  select(-Category) %>%
+  st_as_sf()
+```
+
+
+## Spatial Lag of Development
+
+``` {r}
+
+fishnet_2021$lagDevelopment_5 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,Developed==1)),5)
+fishnet_2021$lagDevelopment_10 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,Developed==1)),10)
+
+```
+
+## Join Counties
+
+``` {r}
+
+fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
+  filter(Water == 0 | Developed == 1) 
+  
+```
+
