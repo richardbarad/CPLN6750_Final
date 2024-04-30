@@ -1,0 +1,248 @@
+---
+title: "CPLN 675 - Urban Growth Modeling"
+author: "Richard Barad"
+date: "4/29/2024"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    code_download: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# 1.2. Setup
+
+```{r load_packages, message=FALSE, warning=FALSE, results = "hide"}
+library(tidyverse)
+library(sf)
+library(raster)
+library(knitr)
+library(kableExtra)
+library(tidycensus)
+library(tigris)
+library(FNN)
+#library(QuantPsyc) # JE Note: in R 4.1, QuantPsyc package not available.
+library(caret)
+library(yardstick)
+library(pscl)
+library(plotROC) 
+library(ggrepel)
+library(pROC)
+library(grid)
+library(gridExtra)
+library(viridis)
+library(igraph)
+
+plotTheme <- theme(
+  plot.title =element_text(size=12),
+  plot.subtitle = element_text(size=8),
+  plot.caption = element_text(size = 6),
+  axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  # Set the entire chart region to blank
+  panel.background=element_blank(),
+  plot.background=element_blank(),
+  #panel.border=element_rect(colour="#F0F0F0"),
+  # Format the grid
+  panel.grid.major=element_line(colour="#D0D0D0",size=.75),
+  axis.ticks=element_blank())
+
+mapTheme <- theme(plot.title =element_text(size=12),
+                  plot.subtitle = element_text(size=8),
+                  plot.caption = element_text(size = 6),
+                  axis.line=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.text.y=element_blank(),
+                  axis.ticks=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.title.y=element_blank(),
+                  panel.background=element_blank(),
+                  panel.border=element_blank(),
+                  panel.grid.major=element_line(colour = 'transparent'),
+                  panel.grid.minor=element_blank(),
+                  legend.direction = "vertical", 
+                  legend.position = "right",
+                  plot.margin = margin(1, 1, 1, 1, 'cm'),
+                  legend.key.height = unit(1, "cm"), legend.key.width = unit(0.2, "cm"))
+
+palette2 <- c("#41b6c4","#253494")
+palette4 <- c("#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette5 <- c("#ffffcc","#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette10 <- c("#f7fcf0","#e0f3db","#ccebc5","#a8ddb5","#7bccc4",
+               "#4eb3d3","#2b8cbe","#0868ac","#084081","#f7fcf0")
+```
+
+# Helper Function
+
+
+```{r, warning = FALSE, message = FALSE}
+#this function converts a column in to quintiles. It is used for mapping.
+quintileBreaks <- function(df,variable) {
+    as.character(quantile(df[[variable]],
+                          c(.01,.2,.4,.6,.8),na.rm=T))
+}
+
+#This function can be used to convert a polygon sf to centroids xy coords.
+xyC <- function(aPolygonSF) {
+  as.data.frame(
+    cbind(x=st_coordinates(st_centroid(aPolygonSF))[,1],
+          y=st_coordinates(st_centroid(aPolygonSF))[,2]))
+} 
+
+#this function convert a raster to a data frame so it can be plotted in ggplot
+rast <- function(inRaster) {
+  data.frame(
+    xyFromCell(inRaster, 1:ncell(inRaster)), 
+    value = getValues(inRaster)) }
+```
+
+# 2. Data Wrangling & Feature Engineering
+
+
+## 2.2. Land Cover Change Data
+
+
+```{r load_data, warning = FALSE, message = FALSE, results = "hide"}
+atlantaMSA <- 
+  st_read("C:/Users/jonat/Documents/CPLN675/CPLN6750_Final/Counties_Atlanta_Region.geojson") %>%
+  st_transform('EPSG:2240') %>%
+  dplyr::filter(MSA == 'Y')
+
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+atlantaMSA_fishnet <- 
+  st_make_grid(atlantaMSA, 4000) %>%
+  st_sf()
+
+atlantaMSA_fishnet <-
+  atlantaMSA_fishnet[atlantaMSA,]
+```
+
+
+```{r, warning = FALSE, message= FALSE}
+ggplot() +
+  geom_sf(data=atlantaMSA_fishnet) +
+  labs(title="Fishnet, 4000 Foot Resolution") +
+  mapTheme
+```
+
+
+## 2.3. Land Cover in 2001
+
+
+## 2.4. Census Data
+
+```{r load_key, warning = FALSE, eval = FALSE}
+census_api_key("ab9309f9cc70c0e1895e7166c3ca981c40cf0331", overwrite = TRUE , install = TRUE)
+```
+
+
+```{r, warning = FALSE, message = FALSE, results = "hide"}
+atlantaPop11 <- 
+  get_acs(geography = "tract", variables = "B01003_001", year = 2011,
+                state = 13, geometry = TRUE, 
+                county=c("Fayette","Carroll","Rockdale","Cobb","Forsyth",
+                         "Clayton","Henry","Dawson","Bartow","Lamar","Haralson","Meriwether","Newton","Gwinnett","Fulton","Pickens","Spalding","Douglas","Coweta","Heard","Butts","Jasper","DeKalb", "Cherokee","Walton","Pike","Barrow","Paulding")) %>%
+  rename(pop_2011 = estimate) %>%
+  st_transform(st_crs(atlantaMSA_fishnet))
+```
+
+
+
+```{r, warning = FALSE, message = FALSE, results = "hide"}
+atlantaPop21 <- 
+  get_acs(geography = "tract", variables = "B01003_001", year = 2021,
+                state = 13, geometry = TRUE, 
+                county=c("Fayette","Carroll","Rockdale","Cobb","Forsyth",
+                         "Clayton","Henry","Dawson","Bartow","Lamar","Haralson","Meriwether","Newton","Gwinnett","Fulton","Pickens","Spalding","Douglas","Coweta","Heard","Butts","Jasper","DeKalb", "Cherokee","Walton","Pike","Barrow","Paulding")) %>%
+  rename(pop_2021 = estimate) %>%
+  st_transform(st_crs(atlantaMSA_fishnet)) %>%
+  st_buffer(-1)
+```
+
+# 2011 and 2021 census data plot
+
+```{r, warning = FALSE, message = FALSE, fig.height= 8, fig.width= 11}
+grid.arrange(
+ggplot() +
+  geom_sf(data = atlantaPop11, aes(fill=factor(ntile(pop_2011,5))), colour=NA) +
+  scale_fill_manual(values = palette5,
+                    labels=quintileBreaks(atlantaPop11,"pop_2011"),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2011") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data = atlantaPop21, aes(fill=factor(ntile(pop_2021,5))), colour=NA) +
+  scale_fill_manual(values = palette5,
+                    labels=quintileBreaks(atlantaPop21,"pop_2021"),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2021") +
+  mapTheme, ncol=2)
+```
+
+
+# Assigns a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell
+
+```{r, warning = FALSE, message = FALSE}
+atlantaMSA_fishnet <-
+  atlantaMSA_fishnet %>%
+  rownames_to_column("fishnetID") %>% 
+  mutate(fishnetID = as.numeric(fishnetID)) %>%
+  dplyr::select(fishnetID)
+
+fishnetPopulation11 <-
+  st_interpolate_aw(atlantaPop11["pop_2011"], atlantaMSA_fishnet, extensive=TRUE) %>%
+  as.data.frame(.) %>%
+  rownames_to_column(var = "fishnetID") %>%
+  left_join(atlantaMSA_fishnet %>%
+              mutate(fishnetID = as.character(fishnetID)),
+            ., by=c("fishnetID"='fishnetID')) %>% 
+  mutate(pop_2011 = replace_na(pop_2011,0)) %>%
+  dplyr::select(pop_2011)
+
+fishnetPopulation21 <-
+  st_interpolate_aw(atlantaPop21["pop_2021"], atlantaMSA_fishnet, extensive=TRUE) %>%
+  as.data.frame(.) %>%
+  rownames_to_column(var = "fishnetID") %>%
+  left_join(atlantaMSA_fishnet %>%
+              mutate(fishnetID = as.character(fishnetID)),
+            ., by=c("fishnetID"='fishnetID')) %>% 
+  mutate(pop_2021 = replace_na(pop_2021,0)) %>%
+  dplyr::select(pop_2021)
+
+fishnetPopulation <- 
+  cbind(fishnetPopulation11,fishnetPopulation21) %>%
+  dplyr::select(pop_2011,pop_2021) %>%
+  mutate(pop_Change = pop_2021 - pop_2011)
+```
+
+For comparison purposes, both the 2010 census tract geometries and the population weighted grid cells are plotted.
+
+```{r, warning = FALSE, message = FALSE, fig.height = 8, fig.width= 11}
+grid.arrange(
+ggplot() +
+  geom_sf(data=atlantaPop21, aes(fill=factor(ntile(pop_2021,5))),colour=NA) +
+  scale_fill_manual(values = palette5,
+                    labels=substr(quintileBreaks(atlantaPop21,"pop_2021"),1,4),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2021",
+       subtitle="Represented as tracts; Boundaries omitted") +
+  mapTheme,
+
+ggplot() +
+  geom_sf(data=fishnetPopulation, aes(fill=factor(ntile(pop_2021,5))),colour=NA) +
+  scale_fill_manual(values = palette5,
+                   labels=substr(quintileBreaks(fishnetPopulation,"pop_2021"),1,4),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2021",
+       subtitle="Represented as fishnet gridcells; Boundaries omitted") +
+  mapTheme, ncol=2)
+```
