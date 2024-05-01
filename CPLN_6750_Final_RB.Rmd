@@ -13,6 +13,13 @@ library(terra)
 library(tidyverse)
 library(tidyterra)
 library(FNN)
+library(gridExtra)
+
+palette2 <- c("#41b6c4","#253494")
+palette4 <- c("#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette5 <- c("#ffffcc","#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette10 <- c("#f7fcf0","#e0f3db","#ccebc5","#a8ddb5","#7bccc4",
+               "#4eb3d3","#2b8cbe","#0868ac","#084081","#f7fcf0")
 
 ```
 
@@ -44,6 +51,11 @@ nn_function <- function(measureFrom,measureTo,k) {
     pull()
   
   return(output)  
+}
+
+quintileBreaks <- function(df,variable) {
+    as.character(quantile(df[[variable]],
+                          c(.01,.2,.4,.6,.8),na.rm=T))
 }
 ```
 
@@ -108,7 +120,7 @@ plot(development_change)
 
 ```{r create_fishnet}
 
-fishnet_2011 <- st_make_grid(atl_msa,2000) %>%
+fishnet_2011 <- st_make_grid(atl_msa,4000) %>%
   st_sf() %>%
   st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
   mutate(ID=row_number()) %>%
@@ -131,7 +143,7 @@ dev_ch <- terra::extract(development_change,fishnet_2011,fun=table) %>%
 hist(dev_ch$percent,breaks=100)
 
 fishnet_2011 <- dev_ch %>%
-  mutate(lc_change = as.factor(ifelse(dev_ch$percent < 25,0,1))) %>%
+  mutate(lc_change = as.factor(ifelse(dev_ch$percent < 5,0,1))) %>%
   select(lc_change) %>%
   cbind(fishnet_2011,.) %>%
   drop_na(lc_change) %>%
@@ -225,16 +237,89 @@ ggplot()+
 
 ``` {r}
 
-data <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(Water == 0 | Developed == 1) 
+fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
+  filter(Water == 0) 
   
 ```
+## Calculate Distance from Road to Fishnet Centroid
+
+``` {r}
+
+```
+
+## 2.4. Census Data
+
+```{r load_key, warning = FALSE, eval = FALSE}
+census_api_key("ab9309f9cc70c0e1895e7166c3ca981c40cf0331", overwrite = TRUE , install = TRUE)
+```
+
+
+```{r, warning = FALSE, message = FALSE, results = "hide"}
+atlantaPop11 <- 
+  get_acs(geography = "tract", variables = "B01003_001", year = 2011,
+                state = 13, geometry = TRUE, 
+                county=c("Fayette","Carroll","Rockdale","Cobb","Forsyth",
+                         "Clayton","Henry","Dawson","Bartow","Lamar","Haralson","Meriwether","Newton","Gwinnett","Fulton","Pickens","Spalding","Douglas","Coweta","Heard","Butts","Jasper","DeKalb", "Cherokee","Walton","Pike","Barrow","Paulding")) %>%
+  rename(pop_2011 = estimate) %>%
+  st_transform(st_crs(atl_msa))
+```
+
+
+
+```{r, warning = FALSE, message = FALSE, results = "hide"}
+atlantaPop21 <- 
+  get_acs(geography = "tract", variables = "B01003_001", year = 2021,
+                state = 13, geometry = TRUE, 
+                county=c("Fayette","Carroll","Rockdale","Cobb","Forsyth",
+                         "Clayton","Henry","Dawson","Bartow","Lamar","Haralson","Meriwether","Newton","Gwinnett","Fulton","Pickens","Spalding","Douglas","Coweta","Heard","Butts","Jasper","DeKalb", "Cherokee","Walton","Pike","Barrow","Paulding")) %>%
+  rename(pop_2021 = estimate) %>%
+  st_transform(st_crs(atl_msa)) %>%
+  st_buffer(-1)
+```
+
+# 2011 and 2021 census data plot
+
+```{r, warning = FALSE, message = FALSE, fig.height= 8, fig.width= 11}
+grid.arrange(
+ggplot() +
+  geom_sf(data = atlantaPop11, aes(fill=factor(ntile(pop_2011,5))), colour=NA) +
+  scale_fill_manual(values = palette5,
+                    labels=quintileBreaks(atlantaPop11,"pop_2011"),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2011") +
+  theme_void(),
+
+ggplot() +
+  geom_sf(data = atlantaPop21, aes(fill=factor(ntile(pop_2021,5))), colour=NA) +
+  scale_fill_manual(values = palette5,
+                    labels=quintileBreaks(atlantaPop21,"pop_2021"),
+                   name="Quintile\nBreaks") +
+  labs(title="Population, Atlanta MSA: 2021") +
+  theme_void(), ncol=2)
+```
+
+
+# Assigns a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell
+
+```{r, warning = FALSE, message = FALSE}
+
+fishnet_2011 <-
+  st_interpolate_aw(atlantaPop11["pop_2011"], fishnet_2011, extensive=TRUE) %>%
+  st_drop_geometry() %>%
+  rownames_to_column(var = "ID") %>%
+  left_join(fishnet_2011 %>%
+              mutate(ID = as.character(ID),.),
+            by=c("ID"='ID')) %>% 
+  mutate(pop_2011 = replace_na(pop_2011,0))
+
+```
+
 
 # Build Fishnet for 2021
 
 ```{r create_fishnet}
 
-fishnet_2021 <- st_make_grid(atl_msa,2000) %>%
+fishnet_2021 <- st_make_grid(atl_msa,4000) %>%
   st_sf() %>%
   st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
   mutate(ID=row_number()) %>%
@@ -270,7 +355,7 @@ onehop <- function(df,value) {
 
 fishnet_2021 <- lc2021_extract %>%
   group_by(ID) %>% summarize(Count = max(Count)) %>%
-  left_join(.,lc2011_extract,by=c('ID','Count'),multiple='first') %>%
+  left_join(.,lc2021_extract,by=c('ID','Count'),multiple='first') %>%
   select(ID,Category) %>%
   onehop(.,'Water') %>%
   onehop(.,'Developed') %>%
@@ -294,12 +379,26 @@ fishnet_2021$lagDevelopment_10 <- nn_function(xyC(fishnet_2021),xyC(filter(fishn
 
 ```
 
+## Add Population
+
+```{r}
+
+fishnet_2021 <-
+  st_interpolate_aw(atlantaPop21["pop_2021"], fishnet_2021, extensive=TRUE) %>%
+  st_drop_geometry() %>%
+  rownames_to_column(var = "ID") %>%
+  left_join(fishnet_2021 %>%
+              mutate(ID = as.character(ID)),
+            ., by=c("ID"='ID')) %>% 
+  mutate(pop_2021 = replace_na(pop_2021,0))
+
+```
+
 ## Join Counties
 
 ``` {r}
 
 fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(Water == 0 | Developed == 1) 
+  filter(Water == 0) 
   
 ```
-
