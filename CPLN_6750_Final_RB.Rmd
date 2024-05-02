@@ -14,6 +14,14 @@ library(tidyverse)
 library(tidyterra)
 library(FNN)
 library(gridExtra)
+library(viridis)
+
+library(caret)
+library(yardstick)
+library(pscl)
+library(plotROC) 
+library(ggrepel)
+library(pROC)
 
 palette2 <- c("#41b6c4","#253494")
 palette4 <- c("#a1dab4","#41b6c4","#2c7fb8","#253494")
@@ -76,90 +84,43 @@ atl_msa_dissolve <- st_union(atl_msa)
 
 ## Get Land Cover Data
 
+Import raster data and project it into the appropriate cordinate system. 
+
 ```{r atl_landcover}
 
 lc2011 <- rast('DATA/nlcd_2011.tif')
 lc2011 <- project(lc2011,'EPSG:2240')
-lc2011 <- terra::mask(lc2011,atl_msa)
 
 lc2021 <- rast('DATA/nlcd_2021.tif')
 lc2021 <- project(lc2021,'EPSG:2240')
-lc2021 <- terra::mask(lc2021,atl_msa)
 
 ```
 
-## Identify developed/undeveloped areas and change
-
-```{r developed_area}
-
-reclassMatrix <- 
-  matrix(c(
-    0,12,0,
-    12,24,1,
-    24,Inf,0),
-  ncol=3, byrow=T)
-
-developed_2011 <- classify(lc2011,reclassMatrix)
-
-developed_2021 <- classify(lc2021,reclassMatrix)
-
-development_change <- developed_2011+developed_2021
-
-reclass2 <- matrix(c(0,0,
-                     1,1,
-                     2,0),ncol=2,byrow=T)
-
-development_change <- classify(development_change,reclass2)
-
-levels(development_change) <- c('No_Change','Change')
-
-plot(development_change)
-
-```
 # Create Fishnet for 2011
+
+I create a 2500 x 2500 square foot grid.
 
 ```{r create_fishnet}
 
-fishnet_2011 <- st_make_grid(atl_msa,4000) %>%
+fishnet <- st_make_grid(atl_msa,2500) %>%
   st_sf() %>%
   st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
   mutate(ID=row_number()) %>%
   select(ID)
  
 ggplot()+
-  geom_sf(data=fishnet_2011,color='grey50',fill='gray90',linewidth=0.1)+
+  geom_sf(data=fishnet,color='grey50',fill='gray90',linewidth=0.1)+
   geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
   theme_void()
 
 ```
 
-# Identify grid squares that are developed and not developed
 
-```{r summarize_development}
+# Reclassify Land Cover Rasters
 
-dev_ch <- terra::extract(development_change,fishnet_2011,fun=table) %>%
-  mutate(percent = Change / (No_Change + Change) * 100)
+Reclassify the land cover rasters into six categories: 'Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped'
 
-hist(dev_ch$percent,breaks=100)
-
-fishnet_2011 <- dev_ch %>%
-  mutate(lc_change = as.factor(ifelse(dev_ch$percent < 5,0,1))) %>%
-  select(lc_change) %>%
-  cbind(fishnet_2011,.) %>%
-  drop_na(lc_change) %>%
-  mutate(ID=row_number())
-
-ggplot()+
-  geom_sf(data=fishnet_2011,aes(fill=lc_change),color='transparent')+
-  geom_sf(data=atl_msa,color='black',fill='transparent')+
-  scale_fill_manual(values=c('gray95','green'),name='Development Change',labels=c('No Change','Change'))+
-  theme_void()
-
-```
-
-# Identify Dominant Land Cover Class 
-
-```{r, reclassify_dev, warning = FALSE, message = FALSE}
+```{r reclassify_dev, fig.width=13, fig.height=7, warning = FALSE, message = FALSE}
 
 land_cover_reclass_matrix = matrix(
                            c(11,0,
@@ -183,69 +144,145 @@ lc2011_class <- terra::classify(lc2011,land_cover_reclass_matrix)
 
 levels(lc2011_class) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
 
+lc2011_class_mask <- terra::mask(lc2011_class,atl_msa)
+
+levels(lc2011_class_mask) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+
+lc2021_class <- terra::classify(lc2021,land_cover_reclass_matrix)
+
+levels(lc2021_class) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+
+lc2021_class_mask <- terra::mask(lc2021_class,atl_msa)
+
+levels(lc2021_class_mask) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+
+grid.arrange(ncol=2,
+
 ggplot()+
-  geom_spatraster(data=lc2011_class,na.rm=TRUE)+
+  geom_spatraster(data=lc2011_class_mask,na.rm=TRUE)+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
   scale_fill_manual(values=c('lightblue','pink','lightgreen','lightyellow','blue','orange'),na.value = "transparent",name='Land Cover')+
-  theme_void()
+  theme_void()+
+  ggtitle('Land Cover in 2011'),
+
+ggplot()+
+  geom_spatraster(data=lc2021_class_mask,na.rm=TRUE)+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  scale_fill_manual(values=c('lightblue','pink','lightgreen','lightyellow','blue','orange'),na.value = "transparent",name='Land Cover')+
+  theme_void()+
+  ggtitle('Land Cover in 2021')
+
+)
 
 ```
 
+Calculate the percent of each grid square that is developed in 2011 and 2021.
+
+```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+
+lc2011_extract <- terra::extract(lc2011_class,fishnet,fun=table) %>%
+  mutate(pct_developed = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100)
+
+lc2021_extract <- terra::extract(lc2021_class,fishnet,fun=table) %>%
+  mutate(pct_developed2021 = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100)
+
+fishnet_pct_developed <- cbind(fishnet,lc2011_extract %>% select(pct_developed),lc2021_extract %>% select(pct_developed2021)) %>%
+  mutate(change = pct_developed2021 - pct_developed)
+
+grid.arrange(ncol=2,
+
+ggplot(data=fishnet_pct_developed)+
+  geom_sf(aes(fill=pct_developed),color='transparent')+
+  scale_fill_viridis(option='rocket',name='Percent Developed')+
+  geom_sf(data=atl_msa,fill='transparent',color='white',linewidth=0.5)+
+  theme_void()+
+  ggtitle('Percent Developed in 2011'),
+
+ggplot(data=fishnet_pct_developed)+
+  geom_sf(aes(fill=pct_developed2021),color='transparent')+
+  scale_fill_viridis(option='rocket',name='Percent Developed')+
+  geom_sf(data=atl_msa,fill='transparent',color='white',linewidth=0.5)+
+  theme_void()+
+  ggtitle('Percent Developed in 2021')
+)
+  
+```
+
+Determine grid squares that were developed in 2011 and 2021. For this analysis, consider any grid square that is more tha 25% developed to be developed.
+
+``` {r identify_developed, fig.width=13, fig.height=7}
+
+fishnet_pct_developed <- fishnet_pct_developed %>%
+  mutate(developed2011 = as.factor(ifelse(pct_developed > 25,1,0)),
+         developed2021 = as.factor(ifelse(pct_developed2021 > 25,1,0)),
+         lc_change = as.factor(ifelse(developed2011 == 0 & developed2021 == 1 & change > 5,1,0)))
+
+grid.arrange(ncol=3,
+
+ggplot(data=fishnet_pct_developed)+
+  geom_sf(aes(fill=developed2011),color='transparent')+
+  scale_fill_manual(values=c('gray95','pink'),labels=c('Not Developed','Developed'),name='')+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  theme_void()+
+  ggtitle('Developed Pixels in 2011'),
+
+ggplot(data=fishnet_pct_developed)+
+  geom_sf(aes(fill=developed2021),color='transparent')+
+  scale_fill_manual(values=c('gray95','pink'),labels=c('Not Developed','Developed'),name='')+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  theme_void()+
+  ggtitle('Developed Pixels in 2021'),
+
+ggplot(data=fishnet_pct_developed)+
+  geom_sf(aes(fill=lc_change),color='transparent')+
+  scale_fill_manual(values=c('gray95','green'),labels=c('No Change','Change'),name='')+
+  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  theme_void()+
+  ggtitle('Pixels with a Change in Development')
+)
+
+```
+
+Determine the dominant land cover class in each grid square and also determine the percent of pixels in each grid square that are forest, farm, wetlands, and other. This was done so that we can test using both boolean and continuous variables for landcover in the model. 
+
 ```{r}
 
-lc2011_extract <- terra::extract(lc2011_class,fishnet_2011,fun=table) %>%
-  pivot_longer(cols=-ID,names_to='Category',values_to='Count') 
-
-onehop <- function(df,value) {
-  df %>%
-  mutate(!!value := ifelse(Category == {{value}},1,0))
-}
-
-fishnet_2011 <- lc2011_extract %>%
-  group_by(ID) %>% summarize(Count = max(Count)) %>%
-  left_join(.,lc2011_extract,by=c('ID','Count'),multiple='first') %>%
-  select(ID,Category) %>%
-  onehop(.,'Water') %>%
-  onehop(.,'Developed') %>%
-  onehop(.,'Forest') %>%
-  onehop(.,'Farm') %>%
-  onehop(.,'Wetlands') %>%
-  onehop(.,'OtherUndeveloped') %>%
-  mutate(ID = as.integer(ID)) %>%
-  inner_join(.,fishnet_2011,by='ID') %>%
-  select(-Category) %>%
-  st_as_sf()
+fishnet_2011 <- cbind(lc2011_extract,fishnet_pct_developed %>% select(developed2011,lc_change)) %>%
+  rename(developed = developed2011) %>%
+  rowwise() %>% mutate(max = max(c(Forest,Farm,Wetlands,Water,OtherUndeveloped,Developed))) %>%
+  ungroup() %>%
+  st_as_sf() %>%
+  mutate(water=as.factor(ifelse(max==Water,1,0)),
+         forest=as.factor(ifelse(max==Forest,1,0)),
+         farm=as.factor(ifelse(max==Farm,1,0)),
+         wetlands=as.factor(ifelse(max==Wetlands,1,0)),
+         otherundeveloped=as.factor(ifelse(max==OtherUndeveloped,1,0)),
+         pct_forest = Forest / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_farm = Farm / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_wetlands = Wetlands / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_other = OtherUndeveloped / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100) %>%
+  select(ID,water,forest,farm,wetlands,otherundeveloped,lc_change,developed,pct_forest,pct_farm,pct_wetlands,pct_other,geometry)
 
 ```
 
 ## Spatial Lag of Development
 
+I did spatial Lag to nearest 5 developed grid squares and 10 developed grid squares so that we can test models using both. 
+
 ``` {r}
 
-fishnet_2011$lagDevelopment_5 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,Developed==1)),5)
-fishnet_2011$lagDevelopment_10 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,Developed==1)),10)
+fishnet_2011$lagDevelopment_5 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,developed==1)),5)
+fishnet_2011$lagDevelopment_10 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,developed==1)),10)
 
 ggplot()+
   geom_sf(data=fishnet_2011,aes(fill=lagDevelopment_10),color='transparent')+
-  geom_sf(data=atl_msa,color='black',linewidth=1,fill='transparent')+
+  geom_sf(data=atl_msa,color='black',linewidth=0.5,fill='transparent')+
   scale_fill_viridis_c(option='virdis',name='Spatial Lag to Development (feet)')+
   labs(title = "Spatial Lag to 2011 Development")+
   theme_void()
 
 ```
 
-## Join Counties
-
-``` {r}
-
-fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(Water == 0) 
-  
-```
-## Calculate Distance from Road to Fishnet Centroid
-
-``` {r}
-
-```
 
 ## 2.4. Census Data
 
@@ -262,11 +299,7 @@ atlantaPop11 <-
                          "Clayton","Henry","Dawson","Bartow","Lamar","Haralson","Meriwether","Newton","Gwinnett","Fulton","Pickens","Spalding","Douglas","Coweta","Heard","Butts","Jasper","DeKalb", "Cherokee","Walton","Pike","Barrow","Paulding")) %>%
   rename(pop_2011 = estimate) %>%
   st_transform(st_crs(atl_msa))
-```
 
-
-
-```{r, warning = FALSE, message = FALSE, results = "hide"}
 atlantaPop21 <- 
   get_acs(geography = "tract", variables = "B01003_001", year = 2021,
                 state = 13, geometry = TRUE, 
@@ -277,23 +310,20 @@ atlantaPop21 <-
   st_buffer(-1)
 ```
 
+
 # 2011 and 2021 census data plot
 
 ```{r, warning = FALSE, message = FALSE, fig.height= 8, fig.width= 11}
 grid.arrange(
 ggplot() +
-  geom_sf(data = atlantaPop11, aes(fill=factor(ntile(pop_2011,5))), colour=NA) +
-  scale_fill_manual(values = palette5,
-                    labels=quintileBreaks(atlantaPop11,"pop_2011"),
-                   name="Quintile\nBreaks") +
+  geom_sf(data = atlantaPop11, aes(fill=pop_2011), colour=NA) +
+  scale_fill_viridis(option='rocket',name='Population 2011',direction=-1)+
   labs(title="Population, Atlanta MSA: 2011") +
   theme_void(),
 
 ggplot() +
-  geom_sf(data = atlantaPop21, aes(fill=factor(ntile(pop_2021,5))), colour=NA) +
-  scale_fill_manual(values = palette5,
-                    labels=quintileBreaks(atlantaPop21,"pop_2021"),
-                   name="Quintile\nBreaks") +
+  geom_sf(data = atlantaPop21, aes(fill=pop_2021), colour=NA) +
+  scale_fill_viridis(option='rocket',name='Population 2021',direction=-1)+
   labs(title="Population, Atlanta MSA: 2021") +
   theme_void(), ncol=2)
 ```
@@ -308,74 +338,78 @@ fishnet_2011 <-
   st_drop_geometry() %>%
   rownames_to_column(var = "ID") %>%
   left_join(fishnet_2011 %>%
-              mutate(ID = as.character(ID),.),
-            by=c("ID"='ID')) %>% 
-  mutate(pop_2011 = replace_na(pop_2011,0))
+              mutate(ID = as.character(ID)),.,
+            by=c('ID'='ID')) %>% 
+  mutate(pop = replace_na(pop_2011,0))
 
 ```
 
+## Calculate Distance from Road to Fishnet Centroid
 
-# Build Fishnet for 2021
+``` {r}
 
-```{r create_fishnet}
+highways <- st_read('./Data/Expressways_Atlanta_Region.geojson') %>% st_transform('EPSG:2240')
 
-fishnet_2021 <- st_make_grid(atl_msa,4000) %>%
-  st_sf() %>%
-  st_join(.,atl_msa,predicate='intersects',left=FALSE) %>%
-  mutate(ID=row_number()) %>%
-  select(ID)
+centroid <- fishnet_2011 %>%
+  st_centroid()
 
-```
+nearest_feat <- st_nearest_feature(centroid,highways)
 
-## Identify Dominant Land Cover Class 
-
-```{r, reclassify_dev, warning = FALSE, message = FALSE}
-
-
-lc2021_class <- terra::classify(lc2021,land_cover_reclass_matrix)
-
-levels(lc2021_class) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
+fishnet_2011$highway_dist <- as.double(st_distance(centroid, highways[nearest_feat,], by_element=TRUE))
 
 ggplot()+
-  geom_spatraster(data=lc2021_class,na.rm=TRUE)+
-  scale_fill_manual(values=c('lightblue','pink','lightgreen','lightyellow','blue','orange'),na.value = "transparent",name='Land Cover')+
+  geom_sf(data=fishnet_2011,aes(fill=highway_dist),color='transparent')+
+  scale_fill_viridis_c(name='Distance to Highway feet')+
+  geom_sf(data=highways,color='red')+
   theme_void()
 
 ```
 
-```{r}
-
-lc2021_extract <- terra::extract(lc2021_class,fishnet_2021,fun=table) %>%
-  pivot_longer(cols=-ID,names_to='Category',values_to='Count') 
-
-onehop <- function(df,value) {
-  df %>%
-  mutate(!!value := ifelse(Category == {{value}},1,0))
-}
-
-fishnet_2021 <- lc2021_extract %>%
-  group_by(ID) %>% summarize(Count = max(Count)) %>%
-  left_join(.,lc2021_extract,by=c('ID','Count'),multiple='first') %>%
-  select(ID,Category) %>%
-  onehop(.,'Water') %>%
-  onehop(.,'Developed') %>%
-  onehop(.,'Forest') %>%
-  onehop(.,'Farm') %>%
-  onehop(.,'Wetlands') %>%
-  onehop(.,'OtherUndeveloped') %>%
-  mutate(ID = as.integer(ID)) %>%
-  inner_join(.,fishnet_2021,by='ID') %>%
-  select(-Category) %>%
-  st_as_sf()
-```
-
-
-## Spatial Lag of Development
+## Join Counties
 
 ``` {r}
 
-fishnet_2021$lagDevelopment_5 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,Developed==1)),5)
-fishnet_2021$lagDevelopment_10 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,Developed==1)),10)
+fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
+  filter(water == 0) 
+  
+```
+# Data Exploration
+
+# Modelling
+
+# Build Fishnet for 2021
+
+## Identify Dominant Land Cover Class 
+
+```{r}
+
+fishnet_2021 <- cbind(lc2021_extract,fishnet_pct_developed %>% select(developed2021)) %>%
+  rename(developed = developed2021) %>%
+  rowwise() %>% mutate(max = max(c(Forest,Farm,Wetlands,Water,OtherUndeveloped))) %>%
+  ungroup() %>%
+  mutate(water=as.factor(ifelse(max==Water,1,0)),
+         forest=as.factor(ifelse(max==Forest,1,0)),
+         farm=as.factor(ifelse(max==Farm,1,0)),
+         wetlands=as.factor(ifelse(max==Wetlands,1,0)),
+         otherundeveloped=as.factor(ifelse(max==OtherUndeveloped,1,0)),
+         pct_forest = Forest / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_farm = Farm / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_wetlands = Wetlands / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100,
+         pct_other = OtherUndeveloped / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100) %>%
+  select(ID,water,forest,farm,wetlands,otherundeveloped,developed,pct_forest,pct_farm,pct_wetlands,pct_other,geometry) %>%
+  st_as_sf()
+
+```
+
+
+## Spatial Lag of Development and Road Distance
+
+``` {r}
+
+fishnet_2021$lagDevelopment_5 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,developed==1)),5)
+fishnet_2021$lagDevelopment_10 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,developed==1)),10)
+
+fishnet_2021$highway_dist <- as.double(st_distance(centroid, highways[nearest_feat,], by_element=TRUE))
 
 ```
 
@@ -390,7 +424,7 @@ fishnet_2021 <-
   left_join(fishnet_2021 %>%
               mutate(ID = as.character(ID)),
             ., by=c("ID"='ID')) %>% 
-  mutate(pop_2021 = replace_na(pop_2021,0))
+  mutate(pop = replace_na(pop_2021,0))
 
 ```
 
@@ -399,6 +433,7 @@ fishnet_2021 <-
 ``` {r}
 
 fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(Water == 0) 
+  filter(water == 0) 
   
 ```
+# Predict on 2021 Fishnet
