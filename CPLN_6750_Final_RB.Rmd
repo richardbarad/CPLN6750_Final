@@ -15,6 +15,7 @@ library(tidyterra)
 library(FNN)
 library(gridExtra)
 library(viridis)
+library(kableExtra)
 
 library(caret)
 library(yardstick)
@@ -31,7 +32,7 @@ palette10 <- c("#f7fcf0","#e0f3db","#ccebc5","#a8ddb5","#7bccc4",
 
 ```
 
-```{r functions, echo=FALSE}
+```{r functions}
 
 xyC <- function(aPolygonSF) {
   as.data.frame(
@@ -88,11 +89,11 @@ Import raster data and project it into the appropriate cordinate system.
 
 ```{r atl_landcover}
 
-lc2011 <- rast('DATA/nlcd_2011.tif')
-lc2011 <- project(lc2011,'EPSG:2240')
+lc2011 <- terra::rast('DATA/nlcd_2011.tif')
+lc2011 <- terra::project(lc2011,'EPSG:2240')
 
-lc2021 <- rast('DATA/nlcd_2021.tif')
-lc2021 <- project(lc2021,'EPSG:2240')
+lc2021 <- terra::rast('DATA/nlcd_2021.tif')
+lc2021 <- terra::project(lc2021,'EPSG:2240')
 
 ```
 
@@ -375,7 +376,133 @@ fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% se
 ```
 # Data Exploration
 
+```{r count_positives}
+
+ggplot(data=fishnet_2011)+
+  geom_bar(aes(x=lc_change,fill=lc_change),stat='count')+
+  scale_fill_manual(values=palette2,labels=c('No Development','Development Change'))+
+  scale_x_discrete(labels=c('No Development','Development Change'),name='Development Change')+
+  scale_y_continuous(name='Number of Grid Squares')+
+  theme_bw()+
+  ggtitle('Number of Grid Squares that Developed and Did Not Develop')
+
+```
+
 # Modelling
+
+## Build Model
+
+Undersample the 0s
+
+```{r}
+
+undersample_2011 <- fishnet_2011 %>% 
+  filter(lc_change == 0) %>% 
+  sample_frac(.1) %>%
+  rbind(.,fishnet_2011 %>% filter(lc_change == 1))
+
+ggplot(data=undersample_2011)+
+  geom_bar(aes(x=lc_change,fill=lc_change),stat='count')+
+  scale_fill_manual(values=palette2,labels=c('No Development','Development Change'))+
+  scale_x_discrete(labels=c('No Development','Development Change'),name='Development Change')+
+  scale_y_continuous(name='Number of Grid Squares')+
+  theme_bw()+
+  ggtitle('Number of Grid Squares that Developed and Did Not Develop after Under sampling 0s')
+
+```
+
+
+Split into training and test dataset.
+
+```{r, warning = FALSE, message = FALSE}
+set.seed(3456)
+
+trainIndex <- createDataPartition(undersample_2011$developed, p = .75,list = FALSE,times = 1)
+
+datTrain <- undersample_2011[ trainIndex,]
+datTest  <- undersample_2011[-trainIndex,]
+
+```
+
+
+Build For Different Models
+
+```{r models}
+
+Model1 <- glm(lc_change ~ wetlands + forest  + farm + otherundeveloped ,
+              family="binomial"(link="logit"), data = datTrain)
+
+Model2 <- glm(lc_change ~ wetlands + forest  + farm + otherundeveloped + lagDevelopment_5 + pop + highway_dist + county,
+              family="binomial"(link="logit"), data = datTrain)
+
+Model3 <- glm(lc_change ~ wetlands + forest  + farm + otherundeveloped + lagDevelopment_10 + pop + highway_dist + county, 
+              family="binomial"(link="logit"), data = datTrain)
+              
+Model4 <- glm(lc_change ~ pct_wetlands + pct_forest  + pct_farm + pct_other + lagDevelopment_5 + pop + highway_dist + county, 
+              family="binomial"(link="logit"), data = datTrain)          
+              
+Model5 <- glm(lc_change ~ pct_wetlands + pct_forest  + pct_farm + pct_other + lagDevelopment_10 + pop + highway_dist + county,
+              family="binomial"(link="logit"), data = datTrain)   
+
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+modelList <- paste0("Model", 1:5)
+map_dfc(modelList, function(x)pR2(get(x)))[4,] %>%
+  setNames(paste0("Model",1:5)) %>%
+  gather(Model,McFadden) %>%
+  ggplot(aes(x=Model,y=McFadden)) +
+    geom_bar(stat="identity",fill='orange') +
+    geom_text(aes(label=round(McFadden,2),y= McFadden - 0.01))+
+    labs(title= "McFadden R-Squared by Model")+
+  theme_bw()
+```
+
+Next, a data frame is created that includes columns for the observed development change, `lc_change`, and one that includes predicted probabilities for `Model5`.
+
+```{r, warning = FALSE, message = FALSE}
+testSetProbs <- 
+  data.frame(class = datTest$lc_change,
+             probs = predict(Model5, datTest, type="response")) 
+  
+ggplot(testSetProbs) +
+  geom_density(alpha=0.5,aes(x=probs,fill=class))+
+  scale_fill_manual(values = palette2,
+                    labels=c("No Change","New Development")) +
+  facet_wrap(~class)+
+  labs(title = "Histogram of test set predicted probabilities",
+       x="Predicted Probabilities",y="Density")+
+  theme_bw()
+```
+## ROC Curve
+
+## Accuracy
+
+```{r, warning = FALSE, message = FALSE}
+options(yardstick.event_first = FALSE)
+
+testSetProbs <- 
+  testSetProbs %>% 
+  mutate(predClass_05 = as.factor(ifelse(testSetProbs$probs >= 0.05 ,1,0)),
+         predClass_10 = as.factor(ifelse(testSetProbs$probs >= 0.10 ,1,0)),
+         predClass_15 = as.factor(ifelse(testSetProbs$probs >= 0.15 ,1,0)),
+         predClass_20 = as.factor(ifelse(testSetProbs$probs >= 0.20 ,1,0)),
+         predClass_25 = as.factor(ifelse(testSetProbs$probs >= 0.25 ,1,0)),
+         predClass_30 = as.factor(ifelse(testSetProbs$probs >= 0.30 ,1,0))) 
+
+testSetProbs %>%
+  dplyr::select(-probs) %>%
+  gather(Variable, Value, -class) %>%
+  group_by(Variable) %>%
+  summarize(Sensitivity = round(yardstick::sens_vec(class,factor(Value)),2),
+            Specificity = round(yardstick::spec_vec(class,factor(Value)),2),
+            Accuracy = round(yardstick::accuracy_vec(class,factor(Value)),2)) %>% 
+  kable() %>%
+  kable_styling(full_width = F)
+```
+
+## Cross Validation
 
 # Build Fishnet for 2021
 
@@ -436,4 +563,8 @@ fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% se
   filter(water == 0) 
   
 ```
-# Predict on 2021 Fishnet
+# Predictitions
+
+## Part 1
+
+## Part 2
