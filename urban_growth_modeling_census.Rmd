@@ -37,7 +37,6 @@ library(gridExtra)
 library(viridis)
 library(igraph)
 library(ggplot2)
-library(raster)
 library(terra)
 
 plotTheme <- theme(
@@ -131,7 +130,7 @@ xyC <- function(aPolygonSF) {
 } 
 
 #this function convert a raster to a data frame so it can be plotted in ggplot
-rast <- function(inRaster) {
+rast_2 <- function(inRaster) {
   data.frame(
     xyFromCell(inRaster, 1:ncell(inRaster)), 
     value = getValues(inRaster)) }
@@ -154,12 +153,12 @@ atlantaMSA <-
 
 ```{r atl_landcover}
 
-lc2011 <- raster("C:/Users/jonat/Documents/CPLN675/CPLN6750_Final/DATA/nlcd_2011.tif")
-lc2011 <- projectRaster(lc2011, crs = "+init=EPSG:2240")
+lc2011 <- rast('DATA/nlcd_2011.tif')
+lc2011 <- project(lc2011,'EPSG:2240')
 lc2011 <- terra::mask(lc2011,atlantaMSA)
 
-lc2021 <- raster("C:/Users/jonat/Documents/CPLN675/CPLN6750_Final/DATA/nlcd_2021.tif")
-lc2011 <- projectRaster(lc2011, crs = "+init=EPSG:2240")
+lc2021 <- rast('DATA/nlcd_2021.tif')
+lc2021 <- project(lc2021,'EPSG:2240')
 lc2021 <- terra::mask(lc2021,atlantaMSA)
 
 ```
@@ -176,61 +175,23 @@ reclassMatrix <-
     24,Inf,0),
   ncol=3, byrow=T)
 
-developed_2011 <- reclassify(lc2011,reclassMatrix)
+developed_2011 <- classify(lc2011,reclassMatrix)
 
-developed_2021 <- reclassify(lc2021,reclassMatrix)
+developed_2021 <- classify(lc2021,reclassMatrix)
 
-developed_2021_proj <- projectRaster(developed_2021, crs = crs(developed_2011))
-
-development_change <- developed_2021_proj + developed_2011
-
+development_change <- developed_2011+developed_2021
 
 reclass2 <- matrix(c(0,0,
                      1,1,
                      2,0),ncol=2,byrow=T)
 
-development_change <- reclassify(development_change,reclass2)
+development_change <- classify(development_change,reclass2)
 
 levels(development_change) <- c('No_Change','Change')
 
 plot(development_change)
 
 ```
-
-
-
-```{r, warning = FALSE, message = FALSE}
-development_change <- 
-  reclassify(development_change,reclassMatrix)
-
-ggplot() +
-  geom_sf(data=atlantaMSA) +
-  geom_raster(data=rast(development_change) %>% na.omit %>% filter(value > 0), 
-              aes(x,y,fill=as.factor(value))) +
-  scale_fill_viridis(direction = -1, discrete=TRUE, name ="Land Cover\nChange") +
-  labs(title = "Land Cover Change, 2000-2010") +
-  mapTheme +
-  theme(legend.direction="horizontal")
-
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ```{r, warning = FALSE, message = FALSE}
@@ -367,28 +328,12 @@ ggplot() +
 
 ## 2.5. Highway Distance
 
-Accessibility is a key determinant of development potential particularly in a sprawling city like Houston. Accessibility features are engineered by measuring distance from each grid cell to its nearest highway.
-
-First highway vectors are downloaded from the Texas State open data website in `geojson` format; projected and subset to the subset using `st_intersection`. Below, new development is mapped with the highway overlay.
-
 
 ```{r, warning = FALSE, message = FALSE, results = "hide"}
 atlantaHighways <-
   st_read("C:/Users/jonat/Documents/CPLN675/CPLN6750_Final/DATA/Expressways_Atlanta_Region.geojson") %>%
   st_transform(st_crs(atlantaMSA)) %>%
   st_intersection(atlantaMSA)
-```
-
-```{r plot_highway, warning = FALSE, message= FALSE}
-ggplot() +
-  geom_point(data=fishnet, 
-             aes(x=xyC(fishnet)[,1], y=xyC(fishnet)[,2],colour=lc_change),size=1.5) +
-  geom_sf(data=houstonHighways) +
-  scale_colour_manual(values = palette2,
-                      labels=c("No Change","New Development")) +
-  labs(title = "New Development and Highways",
-       subtitle = "As fishnet centroids") +
-  mapTheme
 ```
 
 Below are some great r-based raster skills. The distance from each grid cell to its nearest highway segment is measured.
@@ -398,12 +343,13 @@ First, the highway layer is converted to raster. This is done by creating an `em
 You may (but likely not) be interested in learning that `sp` is the older spatial data convention in R. Although `sf` is the new convention, raster/vector interactions still require `sp`. The `as` function converts.
 
 ```{r, warning = FALSE, message = FALSE}
-emptyRaster <- lc_change
+development_change_raster <-raster(development_change)
+emptyRaster <- development_change_raster
 emptyRaster[] <- NA
 
 highway_raster <- 
-  as(houstonHighways,'Spatial') %>%
-  rasterize(.,emptyRaster)
+  as(atlantaHighways,'Spatial') %>%
+  raster::rasterize(.,emptyRaster)
 
 highway_raster_distance <- distance(highway_raster)
 names(highway_raster_distance) <- "distance_highways"
@@ -411,21 +357,26 @@ names(highway_raster_distance) <- "distance_highways"
 highwayPoints <-
   rasterToPoints(highway_raster_distance) %>%
   as.data.frame() %>%
-  st_as_sf(coords = c("x", "y"), crs = st_crs(houstonMSA_fishnet))
+  st_as_sf(coords = c("x", "y"), crs = st_crs(atlantaMSA_fishnet))
 
 highwayPoints_fishnet <- 
-  aggregate(highwayPoints, houstonMSA_fishnet, mean) %>%
+  aggregate(highwayPoints, atlantaMSA_fishnet, mean) %>%
   mutate(distance_highways = ifelse(is.na(distance_highways),0,distance_highways))
 
 ggplot() +
-  geom_sf(data=houstonMSA) +
+  geom_sf(data=atlantaMSA) +
   geom_point(data=highwayPoints_fishnet, aes(x=xyC(highwayPoints_fishnet)[,1], 
                                              y=xyC(highwayPoints_fishnet)[,2], 
                  colour=factor(ntile(distance_highways,5))),size=1.5) +
   scale_colour_manual(values = palette5,
                       labels=substr(quintileBreaks(highwayPoints_fishnet,"distance_highways"),1,8),
                       name="Quintile\nBreaks") +
-  geom_sf(data=houstonHighways, colour = "red") +
+  geom_sf(data=atlantaHighways, colour = "red") +
   labs(title = "Distance to Highways",
        subtitle = "As fishnet centroids; Highways visualized in red") +
   mapTheme
+```
+
+1. plot of each land cover class. how many 0 and 1
+
+
