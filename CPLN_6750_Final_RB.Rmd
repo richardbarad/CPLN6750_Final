@@ -19,7 +19,6 @@ library(kableExtra)
 
 library(caret)
 library(yardstick)
-library(pscl)
 library(plotROC) 
 library(ggrepel)
 library(pROC)
@@ -416,17 +415,19 @@ ggplot()+
 ``` {r}
 
 fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(water == 0) 
+  filter(water == 0) %>%
+  filter(developed == 0) 
   
 ```
+
 # Data Exploration
 
 ```{r count_positives}
 
 ggplot(data=fishnet_2011)+
   geom_bar(aes(x=lc_change,fill=lc_change),stat='count')+
-  scale_fill_manual(values=palette2,labels=c('No Development','Development Change'))+
-  scale_x_discrete(labels=c('No Development','Development Change'),name='Development Change')+
+  scale_fill_manual(values=palette2,labels=c('No Change','Development Change'))+
+  scale_x_discrete(labels=c('No Change','Development Change'),name='Development Change')+
   scale_y_continuous(name='Number of Grid Squares')+
   theme_bw()+
   ggtitle('Number of Grid Squares that Developed and Did Not Develop')
@@ -482,7 +483,7 @@ fishnet_2011 %>%
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
-  dplyr::select(lc_change:otherundeveloped,developed, water, forest, farm, wetlands) %>%
+  dplyr::select(lc_change:otherundeveloped,water, forest, farm, wetlands) %>%
   gather(Land_Cover_Type, Value, -lc_change, -geometry) %>%
    st_set_geometry(NULL) %>%
      group_by(lc_change, Land_Cover_Type) %>%
@@ -505,7 +506,7 @@ Undersample the 0s
 
 undersample_2011 <- fishnet_2011 %>% 
   filter(lc_change == 0) %>% 
-  sample_frac(.1) %>%
+  sample_frac(.2) %>%
   rbind(.,fishnet_2011 %>% filter(lc_change == 1))
 
 ggplot(data=undersample_2011)+
@@ -565,6 +566,11 @@ map_dfc(modelList, function(x)pR2(get(x)))[4,] %>%
     labs(title= "McFadden R-Squared by Model")+
   theme_bw()
 ```
+```{r}
+
+summary(Model5)
+
+```
 
 Next, a data frame is created that includes columns for the observed development change, `lc_change`, and one that includes predicted probabilities for `Model5`.
 
@@ -582,7 +588,20 @@ ggplot(testSetProbs) +
        x="Predicted Probabilities",y="Density")+
   theme_bw()
 ```
+
 ## ROC Curve
+
+```{r ROC_Curve}
+
+auc <- round(auc(testSetProbs$class,testSetProbs$probs),4)
+
+ggplot(data=testSetProbs,aes(d=as.numeric(class),m=probs))+
+  geom_roc(n.cuts=50,color='orange',labels=FALSE)+
+  annotate("text", x = 0.1, y = 1, label=paste("AUC: ",as.character(auc)),color='orange')+
+  theme_bw()
+
+
+```
 
 ## Accuracy
 
@@ -609,7 +628,90 @@ testSetProbs %>%
   kable_styling(full_width = F)
 ```
 
+## Generalizability
+
+```{r generlize_county, , fig.height= 8, fig.width= 11}
+
+county_errors <- cbind(datTest,testSetProbs %>% select(class,predClass_10)) %>%
+  mutate(type = case_when(class == '1' & predClass_10 == '1' ~ 'TP',
+                         class == '0' & predClass_10 == '0' ~ 'TN',
+                         class == '0' & predClass_10 == '1' ~ 'FP',
+                         class == '1' & predClass_10 == '0' ~ 'FN')) %>%
+  st_drop_geometry() %>%
+  group_by(county,type) %>% tally() %>%
+  pivot_wider(names_from=type,values_from=n) %>%
+  replace(is.na(.),0) %>%
+  left_join(atl_msa,.,by=join_by('NAME10'=='county')) %>%
+  mutate(sensitivity = round(TP / (FN + TP) * 100,1),
+         specificity = round(TN / (TN + FP) *100),1) %>%
+  select(NAME10,sensitivity,specificity)
+
+grid.arrange(
+
+ggplot(data=county_errors)+
+  geom_sf(aes(fill=sensitivity),color='gray30')+
+  scale_fill_distiller(palette='Greens',name='Sensisitvity',na.value='gray50')+
+  geom_sf_text(aes(label=NAME10),size=3)+
+  labs(title='Sensitivity by County',subtitle='Gray Indicates No Data')+
+  theme_void(),
+  
+ggplot(data=county_errors)+
+  geom_sf(aes(fill=specificity),color='gray30')+
+  scale_fill_distiller(palette='Greens',name='Specificity',na.value='gray50')+
+  geom_sf_text(aes(label=NAME10),size=3)+
+  labs(title='Specificity by County')+
+  theme_void(),
+
+nrow=1
+  
+)
+
+```
+
 ## Cross Validation
+
+```{r cross_validation}
+
+
+#Cross Validation Needed a Text Field
+undersample_2011 <- undersample_2011 %>%
+  mutate(lc_change_text = ifelse(lc_change == 1,'Change','No.Change'))
+
+ctrl <- trainControl(method = "cv", number = 50, classProbs = TRUE, savePredictions = TRUE, summaryFunction = twoClassSummary)
+
+cvFit <- train(
+  lc_change_text ~ pct_wetlands + pct_forest  + pct_farm + pct_other + lagDevelopment_10 + pop + highway_dist + county,
+  data = undersample_2011,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl
+)
+
+# Manually calculated Sensitivity and Specificity as train defaulted to using a threshold of 0.5 and could not figure out how to manually set threshold 
+pred <- cvFit$pred %>%
+  mutate(Change = round(1 - No.Change,2),
+    pred = (ifelse(Change > 0.10,'Change','No.Change')),
+        type = case_when(pred == 'Change' & obs == 'Change' ~ 'TP',
+                         pred == 'No.Change' & obs == 'No.Change' ~ 'TN',
+                         pred == 'Change' & obs == 'No.Change' ~ 'FP',
+                         pred == 'No.Change' & obs == 'Change' ~ 'FN')) %>%
+  group_by(Resample,type) %>% tally %>%
+  spread(key=type,value=n) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Sensitivity = TP / (TP + FN),
+         Specificity = TN / (FP + TN),
+         Accuracy = (TP + TN) / (TP + TN + FP + FN)) %>%
+  dplyr::select('Sensitivity','Specificity','Accuracy') %>%
+  pivot_longer(.,cols=-Resample,names_to='metric',values_to='value')
+
+ggplot(data=pred,aes(value)) + 
+  geom_histogram(bins=50, fill = '#E4002B',color='gray60',linewidth=0.1)+
+  facet_wrap(~metric) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(x="Goodness of Fit", y="Count", title="Histogram of Cross Validation Model Fit Metrics")+
+  theme_bw()
+
+```
 
 # Build Fishnet for 2021
 
@@ -666,12 +768,55 @@ fishnet_2021 <-
 
 ``` {r}
 
+fishnet_2021_dev <- fishnet_2021 %>% filter(developed==1)
+
 fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(water == 0) 
+  filter(water==0) %>%
+  filter(developed==0)
   
 ```
-# Predictitions
+
+# Predictitions for 2031
 
 ## Part 1
+
+The map below shows where development is forecasted to take place. Grid squares that are predicted to convert to developed grid squares between 2021 and 2031 are shown in red, while grid squares that are not expected to convert are shown in green. The chart on the right shows the number of grid squares by that are predicted to convert by land cover type. Overall, the majority of grid cells that are predicted to convert are forested cells.
+
+```{r fig.width=12,fig.height=5}
+fishnet_2021_results <- fishnet_2021 %>%
+  mutate(probs=predict(Model5,fishnet_2021,type='response'),
+         outcome=as.factor(ifelse(probs>=0.1,1,0)))
+
+fishnet_2021_type <- fishnet_2021_results %>%
+  select(ID,forest,farm,wetlands,otherundeveloped,outcome) %>%
+  st_drop_geometry() %>%
+  pivot_longer(cols=c(-outcome,-ID),names_to='Type',values_to='Land_Cover') %>%
+  filter(Land_Cover == 1) %>%
+  filter(outcome == 1)
+
+grid.arrange(
+  
+ggplot()+
+  geom_sf(data=fishnet_2021_dev,fill='gray70',color='transparent')+
+  geom_sf(data=fishnet_2021_results,aes(fill=outcome),color='transparent')+
+  geom_sf(data=atl_msa,color='gray40',linewidth=0.5,fill='transparent')+
+  scale_fill_manual(values=c('#baffaa','#fc6a6e'),name='Predicted Outcome',labels=c('No Development Change','Development Change'))+
+  geom_sf_text(data=atl_msa,aes(label=NAME10),size=3)+
+  ggtitle('Map of Predictions for 2031')+
+  theme_void(),
+
+ggplot(data=fishnet_2021_type)+
+  geom_bar(aes(x=Type,fill=Type),stat='Count')+
+  scale_fill_manual(values=c('yellow','lightgreen','orange','lightblue'),na.value = "transparent",name='Land Cover')+
+  ggtitle('Type of Land Cover Grid Squares Predicted to Change')+
+  scale_x_discrete('Type of Land Cover')+
+  theme_bw(),
+
+nrow=1,
+widths=c(3,4)
+)
+
+
+```
 
 ## Part 2
