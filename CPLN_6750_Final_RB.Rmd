@@ -5,7 +5,7 @@ date: "2024-04-24"
 output: html_document
 ---
 
-```{r setup, echo=FALSE}
+```{r setup}
 
 library(sf)
 library(tidycensus)
@@ -19,6 +19,7 @@ library(kableExtra)
 
 library(caret)
 library(yardstick)
+library(pscl)
 library(plotROC) 
 library(ggrepel)
 library(pROC)
@@ -61,15 +62,17 @@ nn_function <- function(measureFrom,measureTo,k) {
   return(output)  
 }
 
-quintileBreaks <- function(df,variable) {
-    as.character(quantile(df[[variable]],
-                          c(.01,.2,.4,.6,.8),na.rm=T))
-}
 ```
 
-# Get Data
+# Planning Rationale
 
-## Get MSA for Atlanta
+Atlanta is one of the fastest growing metropolitan areas in the United States. In 2011 the city's Metropolitan Service Area (MSA) had a population of 4,544,000 people. By 2021 the population had increased to 5,911,000 people an increase of 30% in just ten years. By 2031 the population is forecasted to reach 6,662,000 people. This high population growth, has resulted in an increase in development. This development is necessary to provide homes for new residents, and additional commercial space to serve a growing population. However, urban development also creates a higher likelihood of urban sprawl, which can have detrimental impacts on the environment and result in biodiversity loss and increased storm water runoff. 
+
+In this analysis, we will develop a model to help forecast where development could take place between 2021 and 2031. The model is first trained using information on where development took place between 2011 and 2021. The predictors used in the model include land cover, distance to nearest highway, distance to nearest developed pixels, and the county the study area is in. Multiple models are developed, and the model which has the best performance is then used to forecast where development will likely take place between 2021 and 2031. The type of model used is a logistic regression model, which is a common type of model used for forecasting land use change.
+
+# Study Area
+
+Our study area for this analysis is the Atlanta MSA. In total 28 counties are included in the Atlanta MSA. The map of the counties included in the study area is shown in the map below. 
 
 ```{r atl_msa}
 
@@ -80,11 +83,19 @@ atl_msa <- st_read('https://arcgis.atlantaregional.com/arcgis/rest/services/Open
 
 atl_msa_dissolve <- st_union(atl_msa)
 
+ggplot()+
+  geom_sf(data=atl_msa,color='gray70')+
+  geom_sf_text(data=atl_msa,aes(label=NAME10),size=2.5)+
+  ggtitle('Map of the Study Area')+
+  theme_void()
+
 ```
+
+# Methods
 
 ## Get Land Cover Data
 
-Import raster data and project it into the appropriate cordinate system. 
+To start, the analysis imports land cover data for 2011 and 2021. Land Cover data comes from the National Land Cover Database (NLCD), a product produced by USGS that provides 30 x 30 meter land cover data for all of the United States.
 
 ```{r atl_landcover}
 
@@ -96,9 +107,9 @@ lc2021 <- terra::project(lc2021,'EPSG:2240')
 
 ```
 
-# Create Fishnet for 2011
+## Create Fishnet for 2011
 
-I create a 2500 x 2500 square foot grid.
+Next, we create a grid of square cells that cover the entire study area. Each grid square is 2500 x 2500 square feet. The grid squares will be our unit of analysis for this study. A map of the grid squares is shown below. 
 
 ```{r create_fishnet}
 
@@ -110,15 +121,17 @@ fishnet <- st_make_grid(atl_msa,2500) %>%
  
 ggplot()+
   geom_sf(data=fishnet,color='grey50',fill='gray90',linewidth=0.1)+
-  geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
+  geom_sf(data=atl_msa,fill='transparent',color='gray20',linewidth=0.5)+
+  geom_sf_text(data=atl_msa,aes(label=NAME10),size=2.5)+
+  ggtitle('Map of Grid Squares in Study Area')+
   theme_void()
 
 ```
 
 
-# Reclassify Land Cover Rasters
+# Land Cover Change Analysis
 
-Reclassify the land cover rasters into six categories: 'Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped'
+The Land Cover rasters obtained from the National Land Cover Database (NLCD), include 15 land cover categories. The land cover data is reclassified into five more general land cover categories. Developed, Open Space; Developed, Low Intensity; Developed, Medium Intensity; and Developed High Intensity are classified as 'Developed'. Decidious Forest, Evergreen Forest, and Mixed Forest are reclassified as Forest. Pasture and Crops are grouped into a single farm category. Woody wetlands and herbaceous wetlands are grouped together into a wetlands category and barren land, scrub, and grasslands are groupped into an 'Other Undeveloped Category'. The maps below show the resulting reclassified land cover maps for 2021 and 2011.
 
 ```{r reclassify_dev, fig.width=13, fig.height=7, warning = FALSE, message = FALSE}
 
@@ -176,58 +189,67 @@ ggplot()+
 
 ```
 
-Calculate the percent of each grid square that is developed in 2011 and 2021.
+Next, the land cover data is summarized by the grid squares in the study area and the percent of each square that is developed is calculated for both the 2021 and 2011 land cover data.  
 
 ```{r land_cover_percent_developed, fig.width=10, fig.height=5}
 
 lc2011_extract <- terra::extract(lc2011_class,fishnet,fun=table)
 
-# Combine the tables from each cell into a single data frame
-lc2011_extract_df <- do.call(rbind, lc2011_extract)
-
-# Convert row names to a separate column and reset row names
-lc2011_extract_df <- data.frame(ID = rownames(lc2011_extract_df), lc2011_extract_df)
-rownames(lc2011_extract_df) <- NULL
-
-# Remove the erroneous first row (if present)
-lc2011_extract_df <- lc2011_extract_df[-1, ]
-
-lc2011_extract_df <- lc2011_extract_df %>%
-  mutate(ID = row_number())
-
-lc2011_extract_df <- lc2011_extract_df %>%
+lc2011_extract_df <- lc2011_extract %>%
   mutate(
     pct_developed = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
   )
+
+# Combine the tables from each cell into a single data frame
+#lc2011_extract_df <- do.call(rbind, lc2011_extract)
+
+# Convert row names to a separate column and reset row names
+#lc2011_extract_df <- data.frame(ID = rownames(lc2011_extract_df), lc2011_extract_df)
+#rownames(lc2011_extract_df) <- NULL
+
+# Remove the erroneous first row (if present)
+#lc2011_extract_df <- lc2011_extract_df[-1, ]
+
+#lc2011_extract_df <- lc2011_extract_df %>%
+#  mutate(ID = row_number())
+
+#lc2011_extract_df <- lc2011_extract_df %>%
+#  mutate(
+#    pct_developed = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
+#  )
 ```
 
-
-Calculate the percent of each grid square that is developed in 2021.
 
 ```{r land_cover_percent_developed, fig.width=10, fig.height=5}
 
 lc2021_extract <- terra::extract(lc2021_class,fishnet,fun=table)
 
-# Combine the tables from each cell into a single data frame
-lc2021_extract_df <- do.call(rbind, lc2021_extract)
-
-# Convert row names to a separate column and reset row names
-lc2021_extract_df <- data.frame(ID = rownames(lc2021_extract_df), lc2021_extract_df)
-rownames(lc2021_extract_df) <- NULL
-
-# Remove the erroneous first row (if present)
-lc2021_extract_df <- lc2021_extract_df[-1, ]
-
-lc2021_extract_df <- lc2021_extract_df %>%
-  mutate(ID = row_number())
-
-lc2021_extract_df <- lc2021_extract_df %>%
+lc2021_extract_df <- lc2021_extract %>%
   mutate(
     pct_developed2021 = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
   )
+
+# Combine the tables from each cell into a single data frame
+#lc2021_extract_df <- do.call(rbind, lc2021_extract)
+
+# Convert row names to a separate column and reset row names
+#lc2021_extract_df <- data.frame(ID = rownames(lc2021_extract_df), lc2021_extract_df)
+#rownames(lc2021_extract_df) <- NULL
+
+# Remove the erroneous first row (if present)
+#lc2021_extract_df <- lc2021_extract_df[-1, ]
+
+#lc2021_extract_df <- lc2021_extract_df %>%
+#  mutate(ID = row_number())
+
+#lc2021_extract_df <- lc2021_extract_df %>%
+#  mutate(
+#    pct_developed2021 = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
+#  )
 ```
 
 
+The maps below show the percent of each grid square that is developed in 2011 and 2021. Grid square that are more developed are shown in a brighter color, while grid square that are not developed are shown in a dark color. 
 
 ```{r land_cover_percent_developed, fig.width=10, fig.height=5}
 fishnet_pct_developed <- cbind(fishnet,lc2011_extract_df %>% select(pct_developed),lc2021_extract_df %>% select(pct_developed2021)) %>%
@@ -252,7 +274,7 @@ ggplot(data=fishnet_pct_developed)+
   
 ```
 
-Determine grid squares that were developed in 2011 and 2021. For this analysis, consider any grid square that is more tha 25% developed to be developed.
+Next, we set a threshold for what percent developed is considered a developed area. In this analysis, a grid square is classified as developed if it is more than 25% developed. The maps below show the grid squares that are developed in 2011 and 2021 and the grid squares that changed their development status between 2011 and 2021. 
 
 ``` {r identify_developed, fig.width=13, fig.height=7}
 
@@ -268,26 +290,32 @@ ggplot(data=fishnet_pct_developed)+
   scale_fill_manual(values=c('gray95','pink'),labels=c('Not Developed','Developed'),name='')+
   geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
   theme_void()+
-  ggtitle('Developed Pixels in 2011'),
+  ggtitle('Developed Pixels Grid Squares in 2011'),
 
 ggplot(data=fishnet_pct_developed)+
   geom_sf(aes(fill=developed2021),color='transparent')+
   scale_fill_manual(values=c('gray95','pink'),labels=c('Not Developed','Developed'),name='')+
   geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
   theme_void()+
-  ggtitle('Developed Pixels in 2021'),
+  ggtitle('Developed Grid Squares in 2021'),
 
 ggplot(data=fishnet_pct_developed)+
   geom_sf(aes(fill=lc_change),color='transparent')+
   scale_fill_manual(values=c('gray95','green'),labels=c('No Change','Change'),name='')+
   geom_sf(data=atl_msa,fill='transparent',color='black',linewidth=0.5)+
   theme_void()+
-  ggtitle('Pixels with a Change in Development')
+  ggtitle('Grid Squares with a Change in Development')
 )
 
 ```
 
-Determine the dominant land cover class in each grid square and also determine the percent of pixels in each grid square that are forest, farm, wetlands, and other. This was done so that we can test using both boolean and continuous variables for landcover in the model. 
+# Add Predictors to 2011 Fishnet
+
+Next, we add data to hte grid squares for the predictors that will be used to train the model.
+
+## Land Cover
+
+The first predictor we work with is land cover data. The dominant land cover class in each of the grid squares is determined - all undeveloped grid squares are classified as either water, forest, farm, wetlands, or other undeveloped. Additionally, the percent of each grid square that is farm, forest, wetlands, and other undeveloped are also calculated. When building models, we will train models using the percent land cover data and the dominant land cover class to see which type of land cover variable has more predictive power and produces a better fit model.
 
 ```{r}
 
@@ -309,9 +337,9 @@ fishnet_2011 <- cbind(lc2011_extract_df,fishnet_pct_developed %>% select(develop
 
 ```
 
-## Spatial Lag of Development
+## Distance to Nearest Developed Cell
 
-I did spatial Lag to nearest 5 developed grid squares and 10 developed grid squares so that we can test models using both. 
+Next we calculated, the average distance in feet from the center of each grid square to the center of the nearest 5 and the nearest 10 developed cells. This is a useful variable to include in the model, because development often tends to cluster in space with new development taking place near existing development sites. The map below shows the average distance in feet to the ten nearest developed cells. As shown, the distance to other developed cells to be smaller near the urban core and is higher in the periphery of the MSA.
 
 ``` {r}
 
@@ -322,18 +350,19 @@ ggplot()+
   geom_sf(data=fishnet_2011,aes(fill=lagDevelopment_10),color='transparent')+
   geom_sf(data=atl_msa,color='black',linewidth=0.5,fill='transparent')+
   scale_fill_viridis_c(option='virdis',name='Spatial Lag to Development (feet)')+
-  labs(title = "Spatial Lag to 2011 Development")+
+  labs(title = "Average Distance to 10 Nearest Developed Cells")+
   theme_void()
 
 ```
 
 
-## 2.4. Census Data
+## Population Data
 
-```{r load_key, warning = FALSE, eval = FALSE}
+```{r load_key, echo=FALSE, warning = FALSE, eval = FALSE}
 census_api_key("ab9309f9cc70c0e1895e7166c3ca981c40cf0331", overwrite = TRUE , install = TRUE)
 ```
 
+Next, we add population data to the fishnet grid. First, population data is downloaded at the Tract Level, and is downloaded from the American Community Survey (ACS) dataset. Population data is downloaded for both 2011 and 2021. 
 
 ```{r, warning = FALSE, message = FALSE, results = "hide"}
 atlantaPop11 <- 
@@ -353,9 +382,7 @@ atlantaPop21 <-
   st_transform(st_crs(atl_msa)) %>%
   st_buffer(-1)
 ```
-
-
-# 2011 and 2021 census data plot
+The maps below show the population data by census tract in 2011 and 2021. 
 
 ```{r, warning = FALSE, message = FALSE, fig.height= 8, fig.width= 11}
 grid.arrange(
@@ -372,8 +399,7 @@ ggplot() +
   theme_void(), ncol=2)
 ```
 
-
-# Assigns a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell
+Next, the population in each census tract is spread out across the grid scales located in the census tract. We assign a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell. Here we are assuming that, the population is distributed equally across the census tract. This is likely not the case, but it is a reasonable assumption to make for our use case. Since population is just being used as a predictor in the model, it does not need to be measured precisely. 
 
 ```{r, warning = FALSE, message = FALSE}
 
@@ -389,7 +415,9 @@ fishnet_2011 <-
 ```
 
 
-## Calculate Distance from Road to Fishnet Centroid
+## Distance from Road
+
+Next, the distance from the center of each grid square to the nearest interstate highway is added to the fishnet. The distance is measure in feet and the map below shows the grid squares colored according to thier distance from the nearest highway. The highways are shown in red. 
 
 ``` {r}
 
@@ -412,6 +440,8 @@ ggplot()+
 
 ## Join Counties
 
+Next, each grid square is associated with a county. The county the grid square is part of is determined based on what grid square has a majority overlap with the county boundaries. Additionally, grid squares that are water or are allready developed are removed the fishnet that will be used to train the model. Developed grid squares are removed because if a grid square is allready developed it is not able to develop again. 
+
 ``` {r}
 
 fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
@@ -422,11 +452,13 @@ fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% se
 
 # Data Exploration
 
+The next steps of the analysis involves exploring our data. The chart below shows the number of grid squares in the dataset that developed and did not develop. As shown, the number of grid square that changed development status are quite small when compared to the number that did not change development status. 
+
 ```{r count_positives}
 
 ggplot(data=fishnet_2011)+
   geom_bar(aes(x=lc_change,fill=lc_change),stat='count')+
-  scale_fill_manual(values=palette2,labels=c('No Change','Development Change'))+
+  scale_fill_manual(values=palette2,labels=c('No Development','Development Change'))+
   scale_x_discrete(labels=c('No Change','Development Change'),name='Development Change')+
   scale_y_continuous(name='Number of Grid Squares')+
   theme_bw()+
@@ -445,7 +477,7 @@ fishnet_2011 %>%
     scale_fill_manual(values = palette2,
                       labels=c("No Development","Development Change"),
                       name="") +
-    labs(title="New Development as a Function of the Continuous Variables") +
+    labs(title="New Development as a Function of Distance to Road and Distance to Nearest Development") +
     theme_bw()
 ```
 
@@ -475,7 +507,7 @@ fishnet_2011 %>%
     scale_fill_manual(values = palette2,
                       labels=c("No Development","Development Change"),
                       name="") +
-    labs(title="New Development as a Function of the Continuous Variables") +
+    labs(title="New Development as a Function of Percent Land Cover Variables") +
     theme_bw()
 ```
 
@@ -819,4 +851,40 @@ widths=c(3,4)
 
 ```
 
+
 ## Part 2
+
+```{r fig.width=12,fig.height=5}
+
+fishnet_2021_s2 <- fishnet_2021
+
+centroid2 <- fishnet_2021_s2 %>%
+  st_centroid()
+
+new_highways <- st_read('./Data//Expressways_Atlanta_Region/Expressways_Atlanta_Region.shp') %>% st_transform('EPSG:2240') %>%
+  mutate(last_edite=ifelse(is.na(last_edite),'Other','SDE'))
+
+new_nearest_feat <- st_nearest_feature(centroid2,new_highways)
+
+fishnet_2021_s2$highway_dist <- as.double(st_distance(centroid2, new_highways[new_nearest_feat,], by_element=TRUE))
+```
+
+## Prediction for Scenario 2
+
+```{r fig.width=12,fig.height=5}
+fishnet_2021_results_s2 <- fishnet_2021_s2_s2 %>%
+  mutate(probs=predict(Model5,fishnet_2021_s2_s2,type='response'),
+         outcome=as.factor(ifelse(probs>=0.1,1,0)))
+
+ggplot()+
+  geom_sf(data=fishnet_2021_dev_s2,fill='gray70',color='transparent')+
+  geom_sf(data=fishnet_2021_results_s2,aes(fill=outcome),color='transparent')+
+  geom_sf(data=atl_msa,color='gray40',linewidth=0.5,fill='transparent')+
+  geom_sf(data=new_highways,aes(color=last_edite))+
+  scale_fill_manual(values=c('#baffaa','#fc6a6e'),name='Predicted Outcome',labels=c('No Development Change','Development Change'))+
+  scale_color_manual(values=c('red','purple'),labels=c('New Highway','Existing Highway'),name='Highways')+
+  geom_sf_text(data=atl_msa,aes(label=NAME10),size=3)+
+  ggtitle('Map of Predictions for New Consturction Project')+
+  theme_void()
+
+```
