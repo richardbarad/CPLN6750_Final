@@ -181,13 +181,57 @@ Calculate the percent of each grid square that is developed in 2011 and 2021.
 
 ```{r land_cover_percent_developed, fig.width=10, fig.height=5}
 
-lc2011_extract <- terra::extract(lc2011_class,fishnet,fun=table) %>%
-  mutate(pct_developed = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100)
+lc2011_extract <- terra::extract(lc2011_class,fishnet,fun=table)
 
-lc2021_extract <- terra::extract(lc2021_class,fishnet,fun=table) %>%
-  mutate(pct_developed2021 = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100)
+# Combine the tables from each cell into a single data frame
+lc2011_extract_df <- do.call(rbind, lc2011_extract)
 
-fishnet_pct_developed <- cbind(fishnet,lc2011_extract %>% select(pct_developed),lc2021_extract %>% select(pct_developed2021)) %>%
+# Convert row names to a separate column and reset row names
+lc2011_extract_df <- data.frame(ID = rownames(lc2011_extract_df), lc2011_extract_df)
+rownames(lc2011_extract_df) <- NULL
+
+# Remove the erroneous first row (if present)
+lc2011_extract_df <- lc2011_extract_df[-1, ]
+
+lc2011_extract_df <- lc2011_extract_df %>%
+  mutate(ID = row_number())
+
+lc2011_extract_df <- lc2011_extract_df %>%
+  mutate(
+    pct_developed = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
+  )
+```
+
+
+Calculate the percent of each grid square that is developed in 2021.
+
+```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+
+lc2021_extract <- terra::extract(lc2021_class,fishnet,fun=table)
+
+# Combine the tables from each cell into a single data frame
+lc2021_extract_df <- do.call(rbind, lc2021_extract)
+
+# Convert row names to a separate column and reset row names
+lc2021_extract_df <- data.frame(ID = rownames(lc2021_extract_df), lc2021_extract_df)
+rownames(lc2021_extract_df) <- NULL
+
+# Remove the erroneous first row (if present)
+lc2021_extract_df <- lc2021_extract_df[-1, ]
+
+lc2021_extract_df <- lc2021_extract_df %>%
+  mutate(ID = row_number())
+
+lc2021_extract_df <- lc2021_extract_df %>%
+  mutate(
+    pct_developed2021 = Developed / (Developed + Water + Forest + Farm + Wetlands + OtherUndeveloped) * 100
+  )
+```
+
+
+
+```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+fishnet_pct_developed <- cbind(fishnet,lc2011_extract_df %>% select(pct_developed),lc2021_extract_df %>% select(pct_developed2021)) %>%
   mutate(change = pct_developed2021 - pct_developed)
 
 grid.arrange(ncol=2,
@@ -248,7 +292,7 @@ Determine the dominant land cover class in each grid square and also determine t
 
 ```{r}
 
-fishnet_2011 <- cbind(lc2011_extract,fishnet_pct_developed %>% select(developed2011,lc_change)) %>%
+fishnet_2011 <- cbind(lc2011_extract_df,fishnet_pct_developed %>% select(developed2011,lc_change)) %>%
   rename(developed = developed2011) %>%
   rowwise() %>% mutate(max = max(c(Forest,Farm,Wetlands,Water,OtherUndeveloped,Developed))) %>%
   ungroup() %>%
@@ -345,6 +389,7 @@ fishnet_2011 <-
 
 ```
 
+
 ## Calculate Distance from Road to Fishnet Centroid
 
 ``` {r}
@@ -388,6 +433,68 @@ ggplot(data=fishnet_2011)+
   ggtitle('Number of Grid Squares that Developed and Did Not Develop')
 
 ```
+
+
+```{r, warning = FALSE, message = FALSE}
+fishnet_2011 %>%
+  dplyr::select(highway_dist,lagDevelopment_5,lagDevelopment_10, lc_change) %>%
+  gather(Variable, Value, -lc_change, -geometry) %>%
+  ggplot(., aes(lc_change, Value, fill=lc_change)) + 
+    geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+    facet_wrap(~Variable) +
+    scale_fill_manual(values = palette2,
+                      labels=c("No Development","Development Change"),
+                      name="") +
+    labs(title="New Development as a Function of the Continuous Variables") +
+    theme_bw()
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+fishnet_2011 %>%
+  dplyr::select(pop,lc_change) %>%
+  gather(Variable, Value, -lc_change, -geometry) %>%
+  ggplot(., aes(lc_change, Value, fill=lc_change)) + 
+    geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+    facet_wrap(~Variable) +
+    scale_fill_manual(values = palette2,
+                      labels=c("No Development","Development Change"),
+                      name="") +
+    labs(title="New Development as a Function of Population") +
+    theme_bw()
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+fishnet_2011 %>%
+  dplyr::select(pct_farm, pct_forest, pct_wetlands, pct_other, lc_change) %>%
+  gather(Variable, Value, -lc_change, -geometry) %>%
+  ggplot(., aes(lc_change, Value, fill=lc_change)) + 
+    geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+    facet_wrap(~Variable) +
+    scale_fill_manual(values = palette2,
+                      labels=c("No Development","Development Change"),
+                      name="") +
+    labs(title="New Development as a Function of the Continuous Variables") +
+    theme_bw()
+```
+
+
+
+```{r, warning = FALSE, message = FALSE}
+fishnet_2011 %>%
+  dplyr::select(lc_change:otherundeveloped,developed, water, forest, farm, wetlands) %>%
+  gather(Land_Cover_Type, Value, -lc_change, -geometry) %>%
+   st_set_geometry(NULL) %>%
+     group_by(lc_change, Land_Cover_Type) %>%
+     summarize(n = sum(as.numeric(Value))) %>%
+     ungroup() %>%
+    mutate(Conversion_Rate = paste0(round(100 * n/sum(n), 2), "%")) %>%
+    filter(lc_change == 1) %>%
+  dplyr::select(Land_Cover_Type,Conversion_Rate) %>%
+  kable() %>% kable_styling(full_width = F)
+```
+
 
 # Modelling
 
@@ -611,7 +718,7 @@ ggplot(data=pred,aes(value)) +
 
 ```{r}
 
-fishnet_2021 <- cbind(lc2021_extract,fishnet_pct_developed %>% select(developed2021)) %>%
+fishnet_2021 <- cbind(lc2021_extract_df,fishnet_pct_developed %>% select(developed2021)) %>%
   rename(developed = developed2021) %>%
   rowwise() %>% mutate(max = max(c(Forest,Farm,Wetlands,Water,OtherUndeveloped))) %>%
   ungroup() %>%
