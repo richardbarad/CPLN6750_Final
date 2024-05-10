@@ -1,11 +1,17 @@
 ---
-title: "CPLN_Final_RB"
-author: "Richard Barad"
-date: "2024-04-24"
-output: html_document
+title: "Urban Development Forecast in Atlanta Metropolitan Statistical Area (MSA)"
+author: "Richard Barad and Johnathon Manurung"
+date: "2024-05-10"
+output:
+  html_document:
+    theme: journal
+    toc: true
+    toc_float: true
+    code_folding: hide
+    code_download: true
 ---
 
-```{r setup}
+```{r setup, warning=FALSE,results='hide',message=FALSE}
 
 library(sf)
 library(tidycensus)
@@ -68,19 +74,22 @@ nn_function <- function(measureFrom,measureTo,k) {
 
 Atlanta is one of the fastest growing metropolitan areas in the United States. In 2011 the city's Metropolitan Service Area (MSA) had a population of 4,544,000 people. By 2021 the population had increased to 5,911,000 people an increase of 30% in just ten years. By 2031 the population is forecasted to reach 6,662,000 people. This high population growth, has resulted in an increase in development. This development is necessary to provide homes for new residents, and additional commercial space to serve a growing population. However, urban development also creates a higher likelihood of urban sprawl, which can have detrimental impacts on the environment and result in biodiversity loss and increased storm water runoff. 
 
-In this analysis, we will develop a model to help forecast where development could take place between 2021 and 2031. The model is first trained using information on where development took place between 2011 and 2021. The predictors used in the model include land cover, distance to nearest highway, distance to nearest developed pixels, and the county the study area is in. Multiple models are developed, and the model which has the best performance is then used to forecast where development will likely take place between 2021 and 2031. The type of model used is a logistic regression model, which is a common type of model used for forecasting land use change.
+In this analysis, we will develop a model based on where development could take place between 2021 and 2031. The model is first trained using information on where development took place between 2011 and 2021. The predictors used in the model include land cover, distance to nearest highway, average distance to nearest developed areas, and county information. Multiple models are developed, and the model which has the best performance is then used to forecast where development will likely take place between 2021 and 2031. The type of model used is a logistic regression model, which is a common type of model used for forecasting land use change.
 
 # Study Area
 
 Our study area for this analysis is the Atlanta MSA. In total 28 counties are included in the Atlanta MSA. The map of the counties included in the study area is shown in the map below. 
 
-```{r atl_msa}
+```{r atl_msa, results='hide'}
 
 atl_msa <- st_read('https://arcgis.atlantaregional.com/arcgis/rest/services/OpenData/FeatureServer/67/query?outFields=*&where=1%3D1&f=geojson') %>%
   st_make_valid() %>%
   st_transform('EPSG:2240') %>%
   dplyr::filter(MSA == 'Y')
 
+```
+
+``` {r map}
 atl_msa_dissolve <- st_union(atl_msa)
 
 ggplot()+
@@ -97,7 +106,7 @@ ggplot()+
 
 To start, the analysis imports land cover data for 2011 and 2021. Land Cover data comes from the National Land Cover Database (NLCD), a product produced by USGS that provides 30 x 30 meter land cover data for all of the United States.
 
-```{r atl_landcover}
+```{r atl_landcover, results='hide'}
 
 lc2011 <- terra::rast('DATA/nlcd_2011.tif')
 lc2011 <- terra::project(lc2011,'EPSG:2240')
@@ -131,9 +140,9 @@ ggplot()+
 
 # Land Cover Change Analysis
 
-The Land Cover rasters obtained from the National Land Cover Database (NLCD), include 15 land cover categories. The land cover data is reclassified into five more general land cover categories. Developed, Open Space; Developed, Low Intensity; Developed, Medium Intensity; and Developed High Intensity are classified as 'Developed'. Decidious Forest, Evergreen Forest, and Mixed Forest are reclassified as Forest. Pasture and Crops are grouped into a single farm category. Woody wetlands and herbaceous wetlands are grouped together into a wetlands category and barren land, scrub, and grasslands are groupped into an 'Other Undeveloped Category'. The maps below show the resulting reclassified land cover maps for 2021 and 2011.
+The Land Cover rasters obtained from the National Land Cover Database (NLCD), include 15 land cover categories. The land cover data is reclassified into five more general land cover categories. Developed, Open Space; Developed, Low Intensity; Developed, Medium Intensity; and Developed High Intensity are classified as 'Developed'. Decidious Forest, Evergreen Forest, and Mixed Forest are reclassified as Forest. Pasture and Crops are grouped into a single farm category. Woody wetlands and herbaceous wetlands are grouped together into a wetlands category and barren land, scrub, and grasslands are grouped into an 'Other Undeveloped Category'. The maps below show the resulting reclassified land cover maps for 2021 and 2011.
 
-```{r reclassify_dev, fig.width=13, fig.height=7, warning = FALSE, message = FALSE}
+```{r reclassify_dev, warning = FALSE, message = FALSE,results='hide'}
 
 land_cover_reclass_matrix = matrix(
                            c(11,0,
@@ -169,6 +178,11 @@ lc2021_class_mask <- terra::mask(lc2021_class,atl_msa)
 
 levels(lc2021_class_mask) <- c('Water','Developed','Forest','Farm','Wetlands','OtherUndeveloped')
 
+```
+
+
+```{r maps, fig.width=13, fig.height=7}
+
 grid.arrange(ncol=2,
 
 ggplot()+
@@ -191,7 +205,7 @@ ggplot()+
 
 Next, the land cover data is summarized by the grid squares in the study area and the percent of each square that is developed is calculated for both the 2021 and 2011 land cover data.  
 
-```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+```{r land_cover_percent_developed_2011, fig.width=10, fig.height=5}
 
 lc2011_extract <- terra::extract(lc2011_class,fishnet,fun=table)
 
@@ -220,7 +234,7 @@ lc2011_extract_df <- lc2011_extract %>%
 ```
 
 
-```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+```{r land_cover_percent_developed_2021, fig.width=10, fig.height=5}
 
 lc2021_extract <- terra::extract(lc2021_class,fishnet,fun=table)
 
@@ -249,9 +263,9 @@ lc2021_extract_df <- lc2021_extract %>%
 ```
 
 
-The maps below show the percent of each grid square that is developed in 2011 and 2021. Grid square that are more developed are shown in a brighter color, while grid square that are not developed are shown in a dark color. 
+The maps below show the percent of each grid square that is developed in 2011 and 2021. Grid squares that are more developed are shown in a brighter color, while grid square that are not developed are shown in a dark color. 
 
-```{r land_cover_percent_developed, fig.width=10, fig.height=5}
+```{r dev_maps, fig.width=10, fig.height=5}
 fishnet_pct_developed <- cbind(fishnet,lc2011_extract_df %>% select(pct_developed),lc2021_extract_df %>% select(pct_developed2021)) %>%
   mutate(change = pct_developed2021 - pct_developed)
 
@@ -311,7 +325,7 @@ ggplot(data=fishnet_pct_developed)+
 
 # Add Predictors to 2011 Fishnet
 
-Next, we add data to hte grid squares for the predictors that will be used to train the model.
+Next, we add data to the grid squares for the predictors that will be used to train the model.
 
 ## Land Cover
 
@@ -339,9 +353,9 @@ fishnet_2011 <- cbind(lc2011_extract_df,fishnet_pct_developed %>% select(develop
 
 ## Distance to Nearest Developed Cell
 
-Next we calculated, the average distance in feet from the center of each grid square to the center of the nearest 5 and the nearest 10 developed cells. This is a useful variable to include in the model, because development often tends to cluster in space with new development taking place near existing development sites. The map below shows the average distance in feet to the ten nearest developed cells. As shown, the distance to other developed cells to be smaller near the urban core and is higher in the periphery of the MSA.
+Next we calculate, the average distance in feet from the center of each grid square to the center of the nearest 5 and the nearest 10 developed grid squares. This is a useful variable to include in the model, because development often tends to cluster in space with new development taking place near existing development. The map below shows the average distance in feet to the ten nearest developed grid squares. As shown, the distance to other developed grid squares tends to be smaller near the urban core and is higher in the periphery of the MSA.
 
-``` {r}
+``` {r warning=FALSE, message=FALSE}
 
 fishnet_2011$lagDevelopment_5 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,developed==1)),5)
 fishnet_2011$lagDevelopment_10 <- nn_function(xyC(fishnet_2011),xyC(filter(fishnet_2011,developed==1)),10)
@@ -399,7 +413,7 @@ ggplot() +
   theme_void(), ncol=2)
 ```
 
-Next, the population in each census tract is spread out across the grid scales located in the census tract. We assign a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell. Here we are assuming that, the population is distributed equally across the census tract. This is likely not the case, but it is a reasonable assumption to make for our use case. Since population is just being used as a predictor in the model, it does not need to be measured precisely. 
+Next, the population in each census tract is spread out across the grid squares located in the census tract. We assign a proportion of a tract’s population to a grid cell weighted by the proportion of the tract that intersects the grid cell. Here we are assuming that, the population is distributed equally across the census tract. This is likely not the case, but it is a reasonable assumption to make for our use case. Since population is just being used as a predictor in the model, it does not need to be measured precisely. 
 
 ```{r, warning = FALSE, message = FALSE}
 
@@ -417,9 +431,9 @@ fishnet_2011 <-
 
 ## Distance from Road
 
-Next, the distance from the center of each grid square to the nearest interstate highway is added to the fishnet. The distance is measure in feet and the map below shows the grid squares colored according to thier distance from the nearest highway. The highways are shown in red. 
+Next, the distance from the center of each grid square to the nearest interstate highway is added to the fishnet. The distance is measure in feet and the map below shows the grid squares colored according to their distance from the nearest highway. The highways are shown in red in the map below.
 
-``` {r}
+``` {r road_dist, warning=FALSE, message=FALSE}
 
 highways <- st_read('./Data/Expressways_Atlanta_Region.geojson') %>% st_transform('EPSG:2240')
 
@@ -440,19 +454,27 @@ ggplot()+
 
 ## Join Counties
 
-Next, each grid square is associated with a county. The county the grid square is part of is determined based on what grid square has a majority overlap with the county boundaries. Additionally, grid squares that are water or are allready developed are removed the fishnet that will be used to train the model. Developed grid squares are removed because if a grid square is allready developed it is not able to develop again. 
+Each grid square is associated with a county. The county the grid square is part of is determined based on what county the grid square has the largest overlap with. Additionally, grid squares that are water or are already developed are removed the fishnet that will be used to train the model. Developed grid squares are removed because if a grid square is already developed it is not able to develop again. The map below shows the grid squares by county after filtering out the grid squares that are water or already developed.
 
-``` {r}
+``` {r warning=FALSE, message=FALSE}
 
 fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
   filter(water == 0) %>%
-  filter(developed == 0) 
+  filter(developed == 0)
+
+ggplot()+
+  geom_sf(data=fishnet_2011,aes(fill=county),color='transparent')+
+  geom_sf(data=atl_msa,color='black',linewidth=0.5,fill='transparent')+
+  scale_fill_viridis_d()+
+  geom_sf_label(data=atl_msa,aes(label=NAME10),size=2.5)+
+  theme_void()+
+  theme(legend.position = "none")
   
 ```
 
 # Data Exploration
 
-The next steps of the analysis involves exploring our data. The chart below shows the number of grid squares in the dataset that developed and did not develop. As shown, the number of grid square that changed development status are quite small when compared to the number that did not change development status. 
+The next steps of the analysis involves exploring our data. The chart below shows the number of grid squares in the dataset that developed and did not develop. The number of grid square that changed development status is quite small when compared to the number that did not develop.
 
 ```{r count_positives}
 
@@ -466,6 +488,7 @@ ggplot(data=fishnet_2011)+
 
 ```
 
+Next, we check if there is a relationship between New Development and our predictor variables. The chart below shows the distance from each grid square to the nearest highway, and the mean distance to the nearest 10 grid squares for grid squares that did and did not develop. As shown, grid squares that developed tend to be located closer to highways and closer to existing development. 
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
@@ -481,6 +504,7 @@ fishnet_2011 %>%
     theme_bw()
 ```
 
+The table below shows the mean estimated population for grid squares that developed and grid squares that did not develop. As shown, grid squares that develop tend to have a higher population.
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
@@ -495,7 +519,7 @@ fishnet_2011 %>%
     labs(title="New Development as a Function of Population") +
     theme_bw()
 ```
-
+The charts below look at the mean percent of land in a grid square that is forest, the mean percent of land that is farmland, the mean percent of land that is other undeveloped, and the mean percent of land that is wetlands for grid squares that experience development change and grid squares that do not experience development change. Grid squares that do not develop have a higher mean percent of forested land and a higher percent of land that is wetland.  
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
@@ -510,12 +534,11 @@ fishnet_2011 %>%
     labs(title="New Development as a Function of Percent Land Cover Variables") +
     theme_bw()
 ```
-
-
+The table below shows the percent of grid squares that were developed between 2011 and 2021. .23% of farmland grid squares developed, 1.16% of forested grid squares developed, and 0.02% of wetland grid squares developed. The high rate of forested land being converted indicates a high rate of tree cover loss and deforestation taking place due to new development. 
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
-  dplyr::select(lc_change:otherundeveloped,water, forest, farm, wetlands) %>%
+  dplyr::select(lc_change:otherundeveloped,forest, farm, wetlands) %>%
   gather(Land_Cover_Type, Value, -lc_change, -geometry) %>%
    st_set_geometry(NULL) %>%
      group_by(lc_change, Land_Cover_Type) %>%
@@ -524,17 +547,20 @@ fishnet_2011 %>%
     mutate(Conversion_Rate = paste0(round(100 * n/sum(n), 2), "%")) %>%
     filter(lc_change == 1) %>%
   dplyr::select(Land_Cover_Type,Conversion_Rate) %>%
-  kable() %>% kable_styling(full_width = F)
+  kable(col.names=c('Land Cover Type','Percent of Grid Squares Converted')) %>% 
+  kable_styling(full_width = F)
 ```
 
 
 # Modelling
 
+The next step in our analysis is to build our logisitic regression model.
+
 ## Build Model
 
-Undersample the 0s
+Development is a relatively rare event in our study area. As shown previously, there was very small number of grid squares that developed between 2011 and 2021 when compared to the number of undeveloped grid squares. This makes development a rare event, and building a model for rare events can present unique challenges. Logistic regression models tend to predict very few 1s during the prediction step when a model is developed for a rare event. The solution to this challenge, is to under sample the 0s (i.e: no development) grid squares. We choose to keep only 20% of the no development grid squares in data used to train our model. 
 
-```{r}
+```{r warning=FALSE,message=FALSE}
 
 undersample_2011 <- fishnet_2011 %>% 
   filter(lc_change == 0) %>% 
@@ -551,8 +577,7 @@ ggplot(data=undersample_2011)+
 
 ```
 
-
-Split into training and test dataset.
+Next, we split the undersampled data into a training and test dataset. The training dataset contains 75% of the data and used to train the model. The test dataset contains 25% of the data and is used to test the model accuracy and generalizability. 
 
 ```{r, warning = FALSE, message = FALSE}
 set.seed(3456)
@@ -564,10 +589,9 @@ datTest  <- undersample_2011[-trainIndex,]
 
 ```
 
+In order to assess what model works best we develop multiple models using different combinations of predictors. The first model includes just land cover information. The second model includes land cover information, plus the mean distance to the nearest five developed cells, the population, the distance to nearest highway and the county the grid square is located in. The third model includes the same predictors are the second model, but the distance to nearest five developed cells is replaced with the distance to the nearest ten developed cells. The fourth model includes the same predictors as model two but uses the percent of the grid square that falls into each land cover class instead of the dominant land cover class. Finally, the fifth model has the same predictors as model four but uses the mean distance to the ten nearest developed grid squares instead of the distance to the five nearest grid squares. 
 
-Build For Different Models
-
-```{r models}
+```{r models, warning=FALSE, message=FALSE}
 
 Model1 <- glm(lc_change ~ wetlands + forest  + farm + otherundeveloped ,
               family="binomial"(link="logit"), data = datTrain)
@@ -585,9 +609,9 @@ Model5 <- glm(lc_change ~ pct_wetlands + pct_forest  + pct_farm + pct_other + la
               family="binomial"(link="logit"), data = datTrain)   
 
 ```
+To compare the models to eachother a metric called the pseudo R^2 is used. This is a useful metric for determining the overall fit of a logistic regression model. Model 5 has the highest pseudo R^2 and is thus the model we decide to select for carrying our predictions.  
 
-
-```{r, warning = FALSE, message = FALSE}
+```{r r2, warning = FALSE, message = FALSE}
 modelList <- paste0("Model", 1:5)
 map_dfc(modelList, function(x)pR2(get(x)))[4,] %>%
   setNames(paste0("Model",1:5)) %>%
@@ -598,13 +622,17 @@ map_dfc(modelList, function(x)pR2(get(x)))[4,] %>%
     labs(title= "McFadden R-Squared by Model")+
   theme_bw()
 ```
+The table below provides a summary the model results. By reviewing the table below we can see that the majority of the predictors include in the model are strong predictors of development. This can be determined by looking at Pr(>|Z|) column which provides information on the significance of each variable as a predictor, a lower value indicates the variable has more predictive power. As shown the percent land cover variables (pct_wetlands, pct_forest, pct_farm, pct_other), distance to the ten nearest developed cells (lagDevelopment_10), and distance to nearest highway (highway_dist) are all significant predictors of development. Population does not appear to be a major predictor of development. Additionally, grid squares in Pike County have the highest likelihood of converting to development across the MSA.
+
 ```{r}
 
-summary(Model5)
+summary(Model5)$coefficients %>%
+  kable() %>%
+  kable_minimal()
 
 ```
 
-Next, a data frame is created that includes columns for the observed development change, `lc_change`, and one that includes predicted probabilities for `Model5`.
+The graph below shows the predicted probability of development occuring for grid squares in the test set that developed and did not develop. As shown, the majority of grid squares that experienced no development change have a low probability of development. This is a positive sign for our model, and indicates that the model does a good job predicting where development is likely not to occur. 
 
 ```{r, warning = FALSE, message = FALSE}
 testSetProbs <- 
@@ -623,19 +651,27 @@ ggplot(testSetProbs) +
 
 ## ROC Curve
 
-```{r ROC_Curve}
+The chart below shows the receiver operating characteristic curve (ROC) for our model. The ROC curve plots the false positive fraction (i.e: percent of developed grid squares incorrectly predicted) and True positive fraction (i.e: percent of developed grid squares correctly predicted) at fifty different thresholds. 
+
+A good model will have a ROC curve that is above the straight gray line. The shorter the distance the curve is from the top left corner the better the model fit. However, if the curve is too close to the top left corner it could indicate that the model is overfit. The ROC curve for our development prediction model is indicative of a good model, that is not overfit. 
+
+```{r ROC_Curve, message=FALSE,warning=FALSE}
 
 auc <- round(auc(testSetProbs$class,testSetProbs$probs),4)
 
 ggplot(data=testSetProbs,aes(d=as.numeric(class),m=probs))+
   geom_roc(n.cuts=50,color='orange',labels=FALSE)+
   annotate("text", x = 0.1, y = 1, label=paste("AUC: ",as.character(auc)),color='orange')+
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey')+
   theme_bw()
 
 
 ```
 
 ## Accuracy
+
+The next step in the modelling process is to select a threshold. The threshold determines the predicted probability threshold above which a grid square is considered to be predicted as likely to develop. We test six different thresholds using our test data and examine the sensitivity (percent of developed grid squares correctly predicted), specificity (percent of non-developed grid squares correctly predicted), and accuracy (overall accuracy). Examining these metrics helps show the trade offs involved in selecting a threshold. When a higher threshold is used the sensitivity will tend to increase and specificity will decrease. Based on a review of the table below, we decide to select a threshold of 0.1. Grid squares that have a predicted probability above the 0.1 threshold will be considered areas that have a higher likelihood of development based on historic development trends. 
 
 ```{r, warning = FALSE, message = FALSE}
 options(yardstick.event_first = FALSE)
@@ -662,7 +698,11 @@ testSetProbs %>%
 
 ## Generalizability
 
-```{r generlize_county, , fig.height= 8, fig.width= 11}
+Next, we also examine our models generalizability. Examining the models generalizability is an important step as it can help determine if the model provides consistent predictions across different geographic areas. The maps below show our selected models sensitivity and specificity by county. As shown, the model appears to have a tendency to under predict development in Rockdale, Walton, and Meriwether counties as indicated by the low sensitivity in these counties. 
+
+Conversely, the model appears to over predict development in Cobb and Gwinett counties. This may be because Cobb and Gwineet counties are already almost fully developed, because of our models tendancy to expect development near already developed areas the model expects the remaining undeveloped areas of Cobb and Gwineet counties to develop. However, they might not be developing because planners are trying to preserve and protect some of the remaining undeveloped areas of the county. 
+
+```{r generlize_county,fig.height= 8, fig.width= 11}
 
 county_errors <- cbind(datTest,testSetProbs %>% select(class,predClass_10)) %>%
   mutate(type = case_when(class == '1' & predClass_10 == '1' ~ 'TP',
@@ -702,7 +742,9 @@ nrow=1
 
 ## Cross Validation
 
-```{r cross_validation}
+A cross-validation analysis is also carried out to estimate and validate the performance metrics including accuracy, specificity, and sensitivity when the model is trained on different training data. The figure below shows the cross-validation model fit metrics. As shown there is generally consistency in all three model metrics when the model is trained on different data. However, the sensitivity metric does vary a bit across folds. 
+
+```{r cross_validation, message=FALSE,warning=FALSE}
 
 
 #Cross Validation Needed a Text Field
@@ -747,6 +789,8 @@ ggplot(data=pred,aes(value)) +
 
 # Build Fishnet for 2021
 
+The next step is to build a grid of 2500 x 2500 cells that contain data for 2021. We will use our model on these grid squares to predict if development change will occur between 2021 and 2031. The grid of squares containing 2021 data is created using the same steps as the 2011 grid of squares. 
+
 ## Identify Dominant Land Cover Class 
 
 ```{r}
@@ -772,7 +816,7 @@ fishnet_2021 <- cbind(lc2021_extract_df,fishnet_pct_developed %>% select(develop
 
 ## Spatial Lag of Development and Road Distance
 
-``` {r}
+``` {r distance, warning=FALSE, message=FALSE}
 
 fishnet_2021$lagDevelopment_5 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,developed==1)),5)
 fishnet_2021$lagDevelopment_10 <- nn_function(xyC(fishnet_2021),xyC(filter(fishnet_2021,developed==1)),10)
@@ -783,7 +827,7 @@ fishnet_2021$highway_dist <- as.double(st_distance(centroid, highways[nearest_fe
 
 ## Add Population
 
-```{r}
+```{r pop, warning=FALSE, message=FALSE}
 
 fishnet_2021 <-
   st_interpolate_aw(atlantaPop21["pop_2021"], fishnet_2021, extensive=TRUE) %>%
@@ -798,21 +842,27 @@ fishnet_2021 <-
 
 ## Join Counties
 
-``` {r}
+``` {r count_join, warning=FALSE, message=FALSE}
+
+
+fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
+  filter(water==0)
 
 fishnet_2021_dev <- fishnet_2021 %>% filter(developed==1)
 
-fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% select(county),largest=TRUE) %>%
-  filter(water==0) %>%
-  filter(developed==0)
+fishnet_2021 <- fishnet_2021 %>% filter(developed==0)
   
 ```
 
 # Predictitions for 2031
 
-## Part 1
+## Scenario 1: Allocating new development
 
-The map below shows where development is forecasted to take place. Grid squares that are predicted to convert to developed grid squares between 2021 and 2031 are shown in red, while grid squares that are not expected to convert are shown in green. The chart on the right shows the number of grid squares by that are predicted to convert by land cover type. Overall, the majority of grid cells that are predicted to convert are forested cells.
+The map below shows where development is forecasted to take place in 2031 by running our model against the 2021 data. Grid squares that are predicted to convert to developed grid squares between 2021 and 2031 are shown in red, while grid squares that are not expected to convert are shown in green. Already developed areas are shown in grey. The chart on the right shows the number of grid squares that are predicted to convert by land cover type. Overall, the majority of grid cells that are predicted to convert are forested cells.
+
+The city of Atlanta is currently growing rapidly. By 2031 the population is forecasted to reach 6,662,000 people indicating an increase of 13% compared to the population levels in 2021. Housing this new population will require new development, and it is recommended the development be concentrated in areas that have a high probability of development according to our model. However, there are some areas where the model forecasts development where it may be wise to avoid additional development. The model tends to forecast infill development in parts of Cobb, Gwinnet, and Fulton countys. It is recommended this infill development be avoided in order to avoid developing some of the few remaining undeveloped portions of the county. Additionally, it is recommended that no development occur in the wetland cells that are forecasted to develop. This is because wetland areas likely have a higher vulnerability to flooding as development in flood prone areas would be unwise.
+
+In order to the meets of a rising population it is likely that additional infrastructure will be needed in many areas of the Atlanta MSA. New resources should be targeted towards Cherokee, Foryth, Barrow, Walton, and Henry counties as these counties tend to have some of the largest increases in development and are thus also likely to experience population increases.
 
 ```{r fig.width=12,fig.height=5}
 fishnet_2021_results <- fishnet_2021 %>%
@@ -851,10 +901,9 @@ widths=c(3,4)
 
 ```
 
+## Scenario 2: Estimating the effect of new transportation
 
-## Part 2
-
-```{r fig.width=12,fig.height=5}
+```{r fig.width=12,fig.height=5,results='hide', warning=FALSE, message=FALSE}
 
 fishnet_2021_s2 <- fishnet_2021
 
@@ -869,15 +918,17 @@ new_nearest_feat <- st_nearest_feature(centroid2,new_highways)
 fishnet_2021_s2$highway_dist <- as.double(st_distance(centroid2, new_highways[new_nearest_feat,], by_element=TRUE))
 ```
 
-## Prediction for Scenario 2
+The map below shows the results of a second prediction in which two new highway projects are included in the model. The new highways are shown as red line in the map below, while existing highways are shown in purple. The new highways run through Paulding and Walton counties. Because of the importance of proximity to highways when deciding where to develop, the construction of these two new highway project leads the model to forecast an increased amount of development in Paulding and Walton counties when compared to the scenario without these two new highway projects. 
+
+Focusing on Paulding county, in the previous scenario, 159 grid squares were predicted to develop in Paulding county while in this scenario 264 grid squares are expected to develop indicating an increase of 105 grid squares. On average, each developed grid square in Paulding county has a population of around 209 people, while the average undeveloped grid square has a population of 71 people. On average, this means a developed grid square in Paulding contain 138 more people and the new highway construction project could result in an additional 14,490 (138 x 105) increase in population in Paulding county assuming all the grid squares that forecasted to develop develop by 2031. 
 
 ```{r fig.width=12,fig.height=5}
-fishnet_2021_results_s2 <- fishnet_2021_s2_s2 %>%
-  mutate(probs=predict(Model5,fishnet_2021_s2_s2,type='response'),
+fishnet_2021_results_s2 <- fishnet_2021_s2 %>%
+  mutate(probs=predict(Model5,fishnet_2021_s2,type='response'),
          outcome=as.factor(ifelse(probs>=0.1,1,0)))
 
 ggplot()+
-  geom_sf(data=fishnet_2021_dev_s2,fill='gray70',color='transparent')+
+  geom_sf(data=fishnet_2021_dev,fill='gray70',color='transparent')+
   geom_sf(data=fishnet_2021_results_s2,aes(fill=outcome),color='transparent')+
   geom_sf(data=atl_msa,color='gray40',linewidth=0.5,fill='transparent')+
   geom_sf(data=new_highways,aes(color=last_edite))+
@@ -888,3 +939,4 @@ ggplot()+
   theme_void()
 
 ```
+
