@@ -19,7 +19,6 @@ library(kableExtra)
 
 library(caret)
 library(yardstick)
-library(pscl)
 library(plotROC) 
 library(ggrepel)
 library(pROC)
@@ -420,6 +419,7 @@ fishnet_2011 <- st_join(fishnet_2011,atl_msa %>% rename (county = NAME10) %>% se
   filter(developed == 0) 
   
 ```
+
 # Data Exploration
 
 ```{r count_positives}
@@ -483,7 +483,7 @@ fishnet_2011 %>%
 
 ```{r, warning = FALSE, message = FALSE}
 fishnet_2011 %>%
-  dplyr::select(lc_change:otherundeveloped,developed, water, forest, farm, wetlands) %>%
+  dplyr::select(lc_change:otherundeveloped,water, forest, farm, wetlands) %>%
   gather(Land_Cover_Type, Value, -lc_change, -geometry) %>%
    st_set_geometry(NULL) %>%
      group_by(lc_change, Land_Cover_Type) %>%
@@ -588,6 +588,7 @@ ggplot(testSetProbs) +
        x="Predicted Probabilities",y="Density")+
   theme_bw()
 ```
+
 ## ROC Curve
 
 ```{r ROC_Curve}
@@ -779,20 +780,42 @@ fishnet_2021 <- st_join(fishnet_2021,atl_msa %>% rename (county = NAME10) %>% se
 
 ## Part 1
 
-The map below shows the 
+The map below shows where development is forecasted to take place. Grid squares that are predicted to convert to developed grid squares between 2021 and 2031 are shown in red, while grid squares that are not expected to convert are shown in green. The chart on the right shows the number of grid squares by that are predicted to convert by land cover type. Overall, the majority of grid cells that are predicted to convert are forested cells.
 
-```{r}
+```{r fig.width=12,fig.height=5}
 fishnet_2021_results <- fishnet_2021 %>%
   mutate(probs=predict(Model5,fishnet_2021,type='response'),
          outcome=as.factor(ifelse(probs>=0.1,1,0)))
 
+fishnet_2021_type <- fishnet_2021_results %>%
+  select(ID,forest,farm,wetlands,otherundeveloped,outcome) %>%
+  st_drop_geometry() %>%
+  pivot_longer(cols=c(-outcome,-ID),names_to='Type',values_to='Land_Cover') %>%
+  filter(Land_Cover == 1) %>%
+  filter(outcome == 1)
+
+grid.arrange(
+  
 ggplot()+
   geom_sf(data=fishnet_2021_dev,fill='gray70',color='transparent')+
   geom_sf(data=fishnet_2021_results,aes(fill=outcome),color='transparent')+
   geom_sf(data=atl_msa,color='gray40',linewidth=0.5,fill='transparent')+
   scale_fill_manual(values=c('#baffaa','#fc6a6e'),name='Predicted Outcome',labels=c('No Development Change','Development Change'))+
   geom_sf_text(data=atl_msa,aes(label=NAME10),size=3)+
-  theme_void()
+  ggtitle('Map of Predictions for 2031')+
+  theme_void(),
+
+ggplot(data=fishnet_2021_type)+
+  geom_bar(aes(x=Type,fill=Type),stat='Count')+
+  scale_fill_manual(values=c('yellow','lightgreen','orange','lightblue'),na.value = "transparent",name='Land Cover')+
+  ggtitle('Type of Land Cover Grid Squares Predicted to Change')+
+  scale_x_discrete('Type of Land Cover')+
+  theme_bw(),
+
+nrow=1,
+widths=c(3,4)
+)
+
 
 ```
 
